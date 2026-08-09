@@ -24,7 +24,14 @@ export interface BehaviorFinding {
 export interface BehaviorContext {
   profile: RepoProfile | null;
   readPathsInSession: readonly string[];
+  declaredPlanPaths: readonly string[];
   largeLineDeletionThreshold: number;
+}
+
+export interface BehaviorDecision {
+  verdict: Severity;
+  ruleId: string;
+  activeFamilies: string[];
 }
 
 const ORDER: Record<Severity, number> = { GREEN: 0, ORANGE: 1, RED: 2 };
@@ -32,6 +39,11 @@ const ORDER: Record<Severity, number> = { GREEN: 0, ORANGE: 1, RED: 2 };
 function severityFor(config: ScoringConfig, id: string): Severity {
   // La validation de configuration garantit la présence de tous les signaux.
   return config.behavior.severities[id] ?? "GREEN";
+}
+
+function pathIncluded(paths: readonly string[], filePath: string): boolean {
+  const normalized = toPosixPath(filePath).toLowerCase();
+  return paths.some((candidate) => toPosixPath(candidate).toLowerCase() === normalized);
 }
 
 function observed(
@@ -58,7 +70,8 @@ export function evaluateBehaviorSignals(
     0,
     (input.change.before?.lineCount ?? 0) - (input.change.after?.lineCount ?? input.change.before?.lineCount ?? 0),
   );
-  const readInSession = context.readPathsInSession.includes(filePath);
+  const readInSession = pathIncluded(context.readPathsInSession, filePath);
+  const declaredInPlan = pathIncluded(context.declaredPlanPaths, filePath);
   const dependencyChange = dependencyAdditions(input);
   const reformatted = input.operation?.fullFileReformat === true;
 
@@ -93,11 +106,13 @@ export function evaluateBehaviorSignals(
     observed(
       config,
       "write-without-read",
-      existedBefore && !readInSession,
-      { existedBefore, readInSession },
-      existedBefore && !readInSession
+      existedBefore && !readInSession && !declaredInPlan,
+      { existedBefore, readInSession, declaredInPlan },
+      existedBefore && !readInSession && !declaredInPlan
         ? "Écriture sur un fichier préexistant jamais lu dans la session."
-        : "Le fichier est nouveau ou a été lu dans la session.",
+        : declaredInPlan
+          ? "Le plan annonce ce chemin ; cet indice neutralise seulement l'absence de lecture."
+          : "Le fichier est nouveau ou a été lu dans la session.",
     ),
     observed(
       config,
@@ -128,21 +143,48 @@ function triggered(findings: readonly BehaviorFinding[]): BehaviorFinding[] {
   return findings.filter((finding) => finding.available !== false && finding.triggered !== false);
 }
 
-/** Table de combinaison explicite et configurable, sans somme de bruit. */
+function familyFor(config: ScoringConfig, finding: BehaviorFinding): string {
+  return config.behavior.signalFamilies[finding.id] ?? finding.id;
+}
+
+/** Première règle correspondante d'une table ordonnée, sans somme de bruit. */
+export function evaluateBehaviorDecision(
+  findings: readonly BehaviorFinding[],
+  config: ScoringConfig,
+): BehaviorDecision {
+  const active = triggered(findings);
+  for (const rule of config.behavior.decisionTable) {
+    const minimum = ORDER[rule.when.minimumSignalSeverity];
+    const families = [...new Set(
+      active
+        .filter((finding) => ORDER[finding.severity] >= minimum)
+        .map((finding) => familyFor(config, finding)),
+    )];
+    const required = rule.when.requiredFamilies ?? [];
+    if (
+      families.length >= rule.when.minimumDistinctFamilies
+      && required.every((family) => families.includes(family))
+    ) {
+      return { verdict: rule.verdict, ruleId: rule.id, activeFamilies: families };
+    }
+  }
+  return {
+    verdict: "GREEN",
+    ruleId: "no-active-signal",
+    activeFamilies: [...new Set(active.map((finding) => familyFor(config, finding)))],
+  };
+}
+
 export function combineBehaviorFindings(
   findings: readonly BehaviorFinding[],
   config: ScoringConfig,
 ): Severity {
-  const active = triggered(findings);
-  if (active.some((finding) => finding.severity === "RED")) return "RED";
-  const orangeCount = active.filter((finding) => finding.severity === "ORANGE").length;
-  if (orangeCount === 0) return "GREEN";
-  return orangeCount >= config.behavior.escalateToRedAtOrangeCount ? "RED" : "ORANGE";
+  return evaluateBehaviorDecision(findings, config).verdict;
 }
 
 export function behaviorScoreBreakdown(
   findings: readonly BehaviorFinding[],
-  verdict: Severity,
+  decision: BehaviorDecision,
   config: ScoringConfig,
 ): ScoreBreakdown {
   return {
@@ -166,10 +208,13 @@ export function behaviorScoreBreakdown(
         explanation: finding.reason,
         triggered: active,
         severity: finding.severity,
+        family: familyFor(config, finding),
       };
     }),
     unavailableSignals: findings.filter((finding) => finding.available === false).map((finding) => finding.id),
-    verdict,
+    verdict: decision.verdict,
+    decisionRuleId: decision.ruleId,
+    activeSignalFamilies: decision.activeFamilies,
   };
 }
 

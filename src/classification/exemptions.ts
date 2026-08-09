@@ -12,7 +12,6 @@ import { pathExplicitlyExpected } from "./rules.js";
 export type ExemptionId =
   | "named-in-intent"
   | "read-this-turn"
-  | "declared-in-plan"
   | "git-ignored"
   | "created-this-session";
 
@@ -21,7 +20,6 @@ export interface ExemptionContext {
   profile: RepoProfile | null;
   scoringConfig: ScoringConfig;
   readPathsThisTurn: readonly string[];
-  declaredPlanPaths: readonly string[];
   createdPathsThisTurn: readonly string[];
   largeLineDeletionThreshold: number;
 }
@@ -53,8 +51,8 @@ export function evaluateExemptions(
   const destructive = isDestructiveOperation(input, context.largeLineDeletionThreshold);
   const secret = secretPatternSources(context.scoringConfig, filePath).length > 0;
   const dependencyAdded = dependencyAdditions(input).added.length > 0;
-  // Les exemptions implicites ne doivent pas masquer un fait critique. Une
-  // intention ou un plan explicite restent, eux, une autorisation traçable.
+  // Les exemptions implicites ne doivent pas masquer un fait critique. Seule
+  // l'intention utilisateur constitue ici une autorisation explicite.
   const implicitVetoAllowed = !destructive && !secret && !dependencyAdded;
 
   // 1. Nommé ou résolu depuis current-intent.json.
@@ -72,18 +70,13 @@ export function evaluateExemptions(
     return { id: "read-this-turn", reason: "Fichier lu par l'agent pendant ce tour." };
   }
 
-  // 3. Annoncé dans le plan du tour.
-  if (pathExplicitlyExpected("", [...context.declaredPlanPaths], filePath)) {
-    return { id: "declared-in-plan", reason: "Fichier annoncé dans le plan déclaré par l'agent." };
-  }
-
-  // 4. Ignoré par Git, sauf lorsqu'un motif de secret correspond.
+  // 3. Ignoré par Git, sauf lorsqu'un motif de secret correspond.
   const ignoredBy = gitignoreSource(input.root, context.profile, filePath);
   if (implicitVetoAllowed && ignoredBy) {
     return { id: "git-ignored", reason: `Fichier ignoré par Git (${ignoredBy}) et sans motif de secret.` };
   }
 
-  // 5. Créé pendant le tour courant uniquement. Le nom historique du champ est
+  // 4. Créé pendant le tour courant uniquement. Le nom historique du champ est
   // conservé pour la compatibilité des journaux, mais l'exemption expire au tour.
   const createdThisTurn = input.change.kind === "created"
     || pathIncluded(context.createdPathsThisTurn, filePath);

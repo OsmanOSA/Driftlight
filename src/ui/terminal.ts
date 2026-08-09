@@ -128,11 +128,18 @@ export function formatScoreExplanation(event: SessionEvent): string {
     return [...lines, ...formatShadowScore(event.shadowScore, event.stage === "shadow")].join("\n");
   }
   if (breakdown.mode === "rules") {
-    lines.push(`Verdict effectif par table de règles : ${breakdown.verdict}`);
+    lines.push(
+      `Verdict effectif par table de règles : ${breakdown.verdict}`
+      + (breakdown.decisionRuleId ? ` · décision ${breakdown.decisionRuleId}` : ""),
+    );
+    if (breakdown.activeSignalFamilies && breakdown.activeSignalFamilies.length > 0) {
+      lines.push(`Familles actives : ${breakdown.activeSignalFamilies.join(", ")}`);
+    }
     for (const signal of breakdown.signals) {
+      const family = signal.family ? ` · famille ${signal.family}` : "";
       lines.push(!signal.available
-        ? `- ${signal.id} · INDISPONIBLE · poids ${signal.weight} · contribution 0 · ${signal.explanation}`
-        : `- ${signal.id} · brut ${rawValueText(signal.rawValue)} · sévérité ${signal.severity ?? "GREEN"} · poids ${signal.weight} · contribution ${signal.contribution} · ${signal.triggered ? "DÉCLENCHÉ" : "non déclenché"}`);
+        ? `- ${signal.id}${family} · INDISPONIBLE · poids ${signal.weight} · contribution 0 · ${signal.explanation}`
+        : `- ${signal.id}${family} · brut ${rawValueText(signal.rawValue)} · sévérité ${signal.severity ?? "GREEN"} · poids ${signal.weight} · contribution ${signal.contribution} · ${signal.triggered ? "DÉCLENCHÉ" : "non déclenché"}`);
     }
     return [...lines, ...formatShadowScore(event.shadowScore, event.stage === "shadow")].join("\n");
   }

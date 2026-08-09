@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { DeterministicClassifier } from "../src/classification/deterministic-classifier.js";
-import { combineBehaviorFindings } from "../src/classification/behavior-signals.js";
+import { combineBehaviorFindings, evaluateBehaviorDecision } from "../src/classification/behavior-signals.js";
 import { loadScoringConfigSync } from "../src/config/scoring-config.js";
 import type { Classification, ClassificationInput, SessionEvent } from "../src/domain/types.js";
 import { captureGitBaseline } from "../src/git/baseline.js";
@@ -143,21 +143,81 @@ test("v2: gitignore n'exempte pas un fichier correspondant à un motif de secret
 
 // ── Étage 2 — signaux de comportement ────────────────────────────────────────
 
-test("v2: la combinaison des signaux suit la règle configurée", async (context) => {
+test("v2: les familles empêchent les signaux corrélés de s'additionner", async (context) => {
   const workspaceContext = await workspace(context);
   const config = loadScoringConfigSync(workspaceContext.root);
 
   assert.equal(combineBehaviorFindings([], config), "GREEN");
-  assert.equal(combineBehaviorFindings([{ id: "a", severity: "ORANGE", reason: "" }], config), "ORANGE");
+  const correlated = evaluateBehaviorDecision([
+    { id: "destructive-edit", severity: "ORANGE", reason: "" },
+    { id: "full-file-reformat", severity: "ORANGE", reason: "" },
+  ], config);
+  assert.equal(correlated.verdict, "ORANGE");
+  assert.deepEqual(correlated.activeFamilies, ["content-destruction"]);
+
+  const independent = [
+    { id: "destructive-edit", severity: "ORANGE" as const, reason: "" },
+    { id: "dependency-added", severity: "ORANGE" as const, reason: "" },
+  ];
   assert.equal(
-    combineBehaviorFindings(
-      [{ id: "a", severity: "ORANGE", reason: "" }, { id: "b", severity: "ORANGE", reason: "" }],
-      config,
-    ),
-    "RED",
-    "deux signaux orange escaladent au seuil configuré",
+    combineBehaviorFindings(independent, config),
+    "ORANGE",
+    "aucune accumulation implicite de signaux orange n'est autorisée",
   );
-  assert.equal(combineBehaviorFindings([{ id: "a", severity: "RED", reason: "" }], config), "RED");
+
+  const configuredEscalation = structuredClone(config);
+  configuredEscalation.behavior.decisionTable.unshift({
+    id: "destruction-plus-dependency",
+    verdict: "RED",
+    when: {
+      minimumSignalSeverity: "ORANGE",
+      minimumDistinctFamilies: 2,
+      requiredFamilies: ["content-destruction", "dependency-change"],
+    },
+  });
+  assert.equal(combineBehaviorFindings(independent, configuredEscalation), "RED");
+  assert.equal(
+    evaluateBehaviorDecision([{ id: "sensitive-file", severity: "RED", reason: "" }], config).verdict,
+    "RED",
+  );
+});
+
+test("v2: le plan est un indice, jamais une exemption ni un masque critique", async (context) => {
+  const workspaceContext = await workspace(context);
+
+  const ordinary = await workspaceContext.classify("src/direct.ts", {
+    declaredPlanPaths: ["src/direct.ts"],
+  });
+  assert.equal(ordinary.level, "GREEN");
+  assert.equal(ordinary.stage, "behavior");
+  assert.equal(ordinary.exemptedBy, undefined);
+  const unread = ordinary.scoreBreakdown.signals.find((signal) => signal.id === "write-without-read");
+  assert.deepEqual(unread?.rawValue, { existedBefore: true, readInSession: false, declaredInPlan: true });
+  assert.equal(unread?.triggered, false);
+
+  const destructive = await workspaceContext.classify("src/direct.ts", {
+    declaredPlanPaths: ["src/direct.ts"],
+    operation: { kind: "write", deletedLineCount: 200 },
+  });
+  assert.equal(destructive.level, "ORANGE");
+  assert.ok(destructive.codes.includes("destructive-edit"));
+  assert.equal(destructive.exemptedBy, undefined);
+
+  const sensitive = await workspaceContext.classify(".env", {
+    declaredPlanPaths: [".env"],
+  });
+  assert.equal(sensitive.level, "RED");
+  assert.ok(sensitive.codes.includes("sensitive-file"));
+
+  await fs.writeFile(
+    path.join(workspaceContext.root, "package.json"),
+    '{"name":"fixture","version":"1.0.0","dependencies":{"left-pad":"^1.0.0","lodash":"^4.0.0"}}\n',
+  );
+  const dependency = await workspaceContext.classify("package.json", {
+    declaredPlanPaths: ["package.json"],
+  });
+  assert.equal(dependency.level, "ORANGE");
+  assert.ok(dependency.codes.includes("dependency-added"));
 });
 
 test("v2: un ajout de dépendance alerte, un changement de version non", async (context) => {
@@ -223,8 +283,8 @@ test("v2: shadowSignalsCanAlert promeut le shadowScore sans diminuer l'étage 2"
   assert.equal(verdict.stage, "shadow");
   assert.equal(verdict.ruleId, "shadow-score");
 
-  const behaviorRed = await workspaceContext.classify("src/direct.ts", {
-    operation: { kind: "write", deletedLineCount: 0 },
+  const behaviorRed = await workspaceContext.classify(".env", {
+    agentReads: [{ path: ".env", turnId: TURN, timestamp: "2026-01-01T00:00:00.000Z" }],
   });
   assert.equal(behaviorRed.level, "RED");
   assert.equal(behaviorRed.stage, "behavior");
@@ -255,6 +315,9 @@ test("v2: un reformatage intégral observable est tracé comme signal distinct",
   });
   assert.ok(verdict.codes.includes("destructive-edit"));
   assert.ok(verdict.codes.includes("full-file-reformat"));
+  assert.equal(verdict.level, "ORANGE", "deux descriptions de la même destruction ne s'escaladent pas");
+  assert.equal(verdict.scoreBreakdown.decisionRuleId, "orange-signal");
+  assert.deepEqual(verdict.scoreBreakdown.activeSignalFamilies, ["content-destruction"]);
   const signal = verdict.scoreBreakdown.signals.find((item) => item.id === "full-file-reformat");
   assert.equal(signal?.available, true);
   assert.equal(signal?.triggered, true);
@@ -345,6 +408,8 @@ test("v2: explain sépare le verdict effectif du shadowScore", async (context) =
   };
   const explanation = formatScoreExplanation(event);
   assert.match(explanation, /Verdict effectif par table de règles/);
+  assert.match(explanation, /décision orange-signal/);
+  assert.match(explanation, /famille content-destruction/);
   assert.match(explanation, /destructive-edit/);
   assert.match(explanation, /Étage 3 · observation seulement/);
   assert.match(explanation, /importDistance/);

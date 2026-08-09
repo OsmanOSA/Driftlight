@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { DeterministicClassifier } from "../classification/deterministic-classifier.js";
 import { absoluteScoreBreakdown } from "../classification/scoring-engine.js";
-import { behaviorScoreBreakdown } from "../classification/behavior-signals.js";
+import { behaviorScoreBreakdown, evaluateBehaviorDecision } from "../classification/behavior-signals.js";
 import { recordFeedbackStats } from "../classification/feedback-stats.js";
 import { changeFromAbsolutePath, highestSeverity } from "../classification/rules.js";
 import type {
@@ -157,11 +157,22 @@ export function eventFromFindings(
   root: string,
   detail?: string,
 ): SessionEvent {
-  const level = findings.length > 0 ? highestSeverity(findings) : "GREEN";
-  const relevant = findings.filter((item) => item.severity === level);
-  const ruleId = relevant[0]?.code ?? "session-lifecycle";
   const scoringConfig = loadScoringConfigSync(root);
   const proposedBehavior = type === "proposed-action" && findings.length > 0;
+  const behaviorFindings = findings.map((item) => ({
+    id: item.code,
+    severity: item.severity,
+    reason: item.reason,
+    available: true,
+    triggered: true,
+    rawValue: true,
+  }));
+  const behaviorDecision = evaluateBehaviorDecision(behaviorFindings, scoringConfig);
+  const level = proposedBehavior
+    ? behaviorDecision.verdict
+    : findings.length > 0 ? highestSeverity(findings) : "GREEN";
+  const relevant = proposedBehavior ? findings : findings.filter((item) => item.severity === level);
+  const ruleId = relevant[0]?.code ?? "session-lifecycle";
   return {
     id: `event-${Date.now()}-${randomUUID().slice(0, 8)}`,
     timestamp: new Date().toISOString(),
@@ -172,15 +183,8 @@ export function eventFromFindings(
     ruleId,
     scoreBreakdown: proposedBehavior
       ? behaviorScoreBreakdown(
-          findings.map((item) => ({
-            id: item.code,
-            severity: item.severity,
-            reason: item.reason,
-            available: true,
-            triggered: true,
-            rawValue: true,
-          })),
-          level,
+          behaviorFindings,
+          behaviorDecision,
           scoringConfig,
         )
       : absoluteScoreBreakdown(scoringConfig, level, ruleId),

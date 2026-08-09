@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "version": "2.0.0",
+  "version": "2.1.0",
   "scoreScale": 100,
   "minimumScore": 0,
   "maximumScore": 100,
@@ -33,7 +33,6 @@
     "\\.(pem|key|p12|pfx)$"
   ],
   "behavior": {
-    "escalateToRedAtOrangeCount": 2,
     "severityWeights": {
       "GREEN": 0,
       "ORANGE": 1,
@@ -49,6 +48,35 @@
       "destructive-file-command": "RED",
       "dependency-command": "ORANGE",
       "infrastructure-command": "RED"
-    }
+    },
+    "signalFamilies": {
+      "sensitive-file": "sensitivity",
+      "destructive-edit": "content-destruction",
+      "write-without-read": "process-evidence",
+      "dependency-added": "dependency-change",
+      "full-file-reformat": "content-destruction",
+      "destructive-git-command": "command-destruction",
+      "destructive-file-command": "command-destruction",
+      "dependency-command": "dependency-change",
+      "infrastructure-command": "infrastructure-mutation"
+    },
+    "decisionTable": [
+      {
+        "id": "red-signal",
+        "verdict": "RED",
+        "when": {
+          "minimumSignalSeverity": "RED",
+          "minimumDistinctFamilies": 1
+        }
+      },
+      {
+        "id": "orange-signal",
+        "verdict": "ORANGE",
+        "when": {
+          "minimumSignalSeverity": "ORANGE",
+          "minimumDistinctFamilies": 1
+        }
+      }
+    ]
   }
 }

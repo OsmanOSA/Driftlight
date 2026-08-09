@@ -250,13 +250,13 @@ Un signal indisponible est retiré et les poids restants sont renormalisés. Si 
 L'ordre est strict :
 
 1. règle absolue de protection du travail sale ;
-2. exemptions (`current-intent`, lecture du tour, plan, Git ignore, création du tour) ;
+2. exemptions (`current-intent`, lecture du tour, Git ignore, création du tour) ;
 3. signaux de comportement observables ;
 4. signaux structurels dans `shadowScore`.
 
-Les exemptions implicites de lecture, Git ignore et création ne couvrent jamais une destruction, un secret ou un ajout de dépendance. La création est bornée au tour courant. Les lectures issues de Read, Grep et Glob ainsi que les chemins du plan sont captées par les hooks et journalisées sans conserver le contenu complet des outils.
+Les exemptions implicites de lecture, Git ignore et création ne couvrent jamais une destruction, un secret ou un ajout de dépendance. La création est bornée au tour courant. Les lectures issues de Read, Grep et Glob ainsi que les chemins du plan sont captées par les hooks et journalisées sans conserver le contenu complet des outils. Le plan de l'agent n'est jamais une autorisation : il neutralise uniquement `write-without-read` pour le chemin annoncé, sans masquer les autres signaux.
 
-L'étage comportemental combine explicitement `write-without-read`, `destructive-edit`, `full-file-reformat`, `dependency-added` et `sensitive-file`. Un signal rouge gagne ; le nombre de signaux orange nécessaire pour escalader est configurable. Un bump de version n'est pas un ajout de dépendance.
+L'étage comportemental combine explicitement `write-without-read`, `destructive-edit`, `full-file-reformat`, `dependency-added` et `sensitive-file`. Les signaux sont regroupés en familles indépendantes, puis la première règle correspondante de `behavior.decisionTable` rend le verdict. Par défaut, un signal rouge gagne et un ou plusieurs signaux orange restent orange : aucune accumulation implicite ne produit rouge. Un bump de version n'est pas un ajout de dépendance.
 
 Le `shadowScore` ne contient que `importDistance`, `fileRarity` et `anchorCooccurrence`. `.env`, Markdown, JSON, images et fichiers hors graphe ont une distance explicitement indisponible. Par défaut, ce score n'alerte jamais. `driftlight explain` sépare le verdict effectif de cette observation.
 

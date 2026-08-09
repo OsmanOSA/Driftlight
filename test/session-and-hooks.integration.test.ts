@@ -352,7 +352,7 @@ test("grep and glob results are captured as reads for the current turn", async (
   assert.equal(session?.events.find((event) => event.path === "src/direct.ts")?.exemptedBy, "read-this-turn");
 });
 
-test("a path declared in the agent plan is exempted and traced", async (context) => {
+test("a path declared in the agent plan is evidence, not an exemption", async (context) => {
   const root = await setup(context);
   await handleClaudeHook(hook(root, "UserPromptSubmit", {
     prompt: "Prépare la modification demandée",
@@ -360,17 +360,27 @@ test("a path declared in the agent plan is exempted and traced", async (context)
   }));
   await handleClaudeHook(hook(root, "PreToolUse", {
     tool_name: "TodoWrite",
-    tool_input: { todos: [{ content: "Réécrire src/unconnected.ts" }] },
+    tool_input: { todos: [{ content: "Ajuster src/unconnected.ts" }] },
   }));
   const output = await handleClaudeHook(hook(root, "PreToolUse", {
-    tool_name: "Write",
-    tool_input: { file_path: path.join(root, "src", "unconnected.ts"), content: "export const planned = true;\n" },
+    tool_name: "Edit",
+    tool_input: {
+      file_path: path.join(root, "src", "unconnected.ts"),
+      old_string: "unconnected = 1",
+      new_string: "unconnected = 2",
+    },
   }));
   assertDoesNotBlock(output);
   const session = await new SessionStore(root).load("claude-integration-hook");
   const event = session?.events.find((item) => item.path === "src/unconnected.ts");
   assert.equal(event?.level, "GREEN");
-  assert.equal(event?.exemptedBy, "declared-in-plan");
+  assert.equal(event?.stage, "behavior");
+  assert.equal(event?.exemptedBy, undefined);
+  assert.equal(event?.scoreBreakdown.decisionRuleId, "no-active-signal");
+  assert.equal(
+    (event?.scoreBreakdown.signals.find((signal) => signal.id === "write-without-read")?.rawValue as { declaredInPlan?: boolean })?.declaredInPlan,
+    true,
+  );
   assert.deepEqual(session?.declaredPlanPathsByTurn?.["turn-plan"], ["src/unconnected.ts"]);
 });
 

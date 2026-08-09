@@ -25,13 +25,12 @@ Une exemption produit **VERT**, n'émet aucune notification et enregistre systé
 | --- | --- |
 | `named-in-intent` | Fichier nommé ou résolu depuis `.driftlight/current-intent.json`. Autorisation explicite, y compris pour une opération destructive, sauf étage 0. |
 | `read-this-turn` | Fichier lu pendant le tour par Read, Grep ou Glob. Ne couvre pas une destruction, un secret ou un ajout de dépendance. |
-| `declared-in-plan` | Chemin annoncé dans le plan du tour. Autorisation explicite, sauf étage 0. |
 | `git-ignored` | Fichier ignoré par Git, sauf si un motif de secret correspond ou si un autre fait critique est observé. |
 | `created-this-session` | Nom de journal conservé pour compatibilité ; la portée réelle est le **tour de création uniquement**. Expire au tour suivant et ne couvre pas un fait critique. |
 
 Un « fait critique » pour les exemptions implicites est une suppression, une réécriture complète, un renommage, une suppression nette dépassant `largeLineDeletionThreshold`, un motif de secret ou un ajout de dépendance. Cette borne évite qu'une lecture normale avant destruction, ou qu'une création ancienne, devienne un veto permanent.
 
-Les chemins lus par les recherches et les chemins de plan sont extraits par les adapters, puis le Core ne conserve que les chemins utiles — jamais le contenu complet des sorties de recherche ou du plan.
+Les chemins lus par les recherches et les chemins de plan sont extraits par les adapters, puis le Core ne conserve que les chemins utiles — jamais le contenu complet des sorties de recherche ou du plan. Une déclaration dans le plan est un indice généré par l'agent, pas une autorisation utilisateur : elle ne produit plus d'exemption. Elle peut uniquement neutraliser `write-without-read` pour le chemin annoncé ; destruction, secret, dépendance et étage 0 restent évalués normalement.
 
 ## Étage 2 — signaux de comportement
 
@@ -45,14 +44,17 @@ Ce sont les seuls signaux autorisés à alerter par défaut. Ils utilisent uniqu
 | `dependency-added` | Nouvelle clé dans `dependencies`, `devDependencies`, `optionalDependencies` ou `peerDependencies`. Un changement de version d'une clé existante n'alerte pas. |
 | `sensitive-file` | Correspondance avec un motif de secret provenant de `driftlight.scoring.json`. Aucun chemin sensible n'est codé dans TypeScript. |
 
-La combinaison est une table de règles explicite :
+Chaque signal appartient à une famille configurée. `destructive-edit` et `full-file-reformat`, par exemple, appartiennent tous deux à `content-destruction` et ne constituent donc pas deux risques indépendants.
 
-- un signal ROUGE produit ROUGE ;
-- au moins `behavior.escalateToRedAtOrangeCount` signaux ORANGE produisent ROUGE ;
-- un signal ORANGE produit ORANGE ;
+La combinaison suit `behavior.decisionTable`, une table ordonnée et configurable :
+
+- la première règle dont la sévérité minimale, le nombre de familles distinctes et les familles requises correspondent rend le verdict ;
+- la configuration livrée traite d'abord tout signal ROUGE, puis tout signal ORANGE ;
+- plusieurs signaux ORANGE restent ORANGE par défaut ;
+- une escalade vers ROUGE doit nommer explicitement une combinaison de familles indépendante avant les règles générales ;
 - aucun signal actif produit VERT.
 
-Les sévérités, poids explicatifs et seuils sont configurés dans `driftlight.scoring.json`. Le `scoreBreakdown` effectif utilise le mode `rules` et conserve, pour chaque signal, disponibilité, valeur brute, sévérité, poids, contribution et état déclenché.
+Les sévérités, familles, décisions et poids explicatifs sont configurés dans `driftlight.scoring.json`. Le `scoreBreakdown` effectif utilise le mode `rules` et conserve la règle de décision, les familles actives et, pour chaque signal, disponibilité, valeur brute, famille, sévérité, poids, contribution et état déclenché.
 
 ## Étage 3 — observation structurelle
 
@@ -113,7 +115,8 @@ Chaque événement de fichier enregistre :
 ## Contrats testés
 
 - lecture avant édition normale → exemption verte, aucune alerte ;
-- intention ou plan explicite → exemption, sauf étage 0 ;
+- intention utilisateur explicite → exemption, sauf étage 0 ;
+- plan de l'agent → indice sur l'absence de lecture, jamais exemption ni masque critique ;
 - suppression/réécriture d'un fichier sale hors scope → ROUGE absolu ;
 - fichier secret gitignoré → non exempté ;
 - exemption de création expirée au tour suivant ;

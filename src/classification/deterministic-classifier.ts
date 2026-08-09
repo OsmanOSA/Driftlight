@@ -7,7 +7,7 @@ import { readRepoProfileSync } from "../profile/repo-profile.js";
 import { absoluteScoreBreakdown, scoreClassification } from "./scoring-engine.js";
 import {
   behaviorScoreBreakdown,
-  combineBehaviorFindings,
+  evaluateBehaviorDecision,
   evaluateBehaviorSignals,
 } from "./behavior-signals.js";
 import { evaluateExemptions } from "./exemptions.js";
@@ -74,7 +74,6 @@ export class DeterministicClassifier implements Classifier {
       profile,
       scoringConfig,
       readPathsThisTurn,
-      declaredPlanPaths: input.declaredPlanPaths ?? [],
       createdPathsThisTurn: input.createdPathsThisTurn ?? [],
       largeLineDeletionThreshold: config.largeLineDeletionThreshold,
     });
@@ -95,10 +94,16 @@ export class DeterministicClassifier implements Classifier {
     // Étage 2 — seuls faits observables autorisés à alerter par défaut.
     const findings = evaluateBehaviorSignals(
       input,
-      { profile, readPathsInSession, largeLineDeletionThreshold: config.largeLineDeletionThreshold },
+      {
+        profile,
+        readPathsInSession,
+        declaredPlanPaths: input.declaredPlanPaths ?? [],
+        largeLineDeletionThreshold: config.largeLineDeletionThreshold,
+      },
       scoringConfig,
     );
-    const behaviorLevel = combineBehaviorFindings(findings, scoringConfig);
+    const behaviorDecision = evaluateBehaviorDecision(findings, scoringConfig);
+    const behaviorLevel = behaviorDecision.verdict;
     const activeFindings = findings.filter((finding) => finding.available !== false && finding.triggered !== false);
 
     // Promotion future de l'étage 3 : elle peut augmenter, jamais diminuer.
@@ -121,7 +126,7 @@ export class DeterministicClassifier implements Classifier {
       ruleId,
       scoreBreakdown: shadowPromoted
         ? shadowScore
-        : behaviorScoreBreakdown(findings, behaviorLevel, scoringConfig),
+        : behaviorScoreBreakdown(findings, behaviorDecision, scoringConfig),
       stage: shadowPromoted ? "shadow" : "behavior",
       shadowScore,
       ...identity,

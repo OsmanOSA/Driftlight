@@ -73,6 +73,8 @@ export interface ScoreSignalBreakdown {
   /** Présent pour les signaux à règles de l'étage 2. */
   triggered?: boolean;
   severity?: Severity;
+  /** Famille indépendante utilisée par la table de décision comportementale. */
+  family?: string;
 }
 
 export interface ScoreBreakdown {
@@ -86,6 +88,10 @@ export interface ScoreBreakdown {
   unavailableSignals: string[];
   verdict: Severity;
   absoluteRuleId?: string;
+  /** Règle de la table comportementale ayant rendu le verdict. */
+  decisionRuleId?: string;
+  /** Familles actives après déduplication des signaux corrélés. */
+  activeSignalFamilies?: string[];
 }
 
 /** Étage ayant rendu le verdict. Le premier qui décide arrête l'évaluation. */
@@ -118,7 +124,7 @@ export interface ClassificationInput {
   changedFileCount: number;
   deletedFileCount: number;
   agentReads: AgentReadRecord[];
-  /** Chemins annoncés dans le plan du tour courant. */
+  /** Chemins annoncés dans le plan du tour courant, comme indice et non autorisation. */
   declaredPlanPaths?: string[];
   /** Chemins effectivement créés pendant le tour courant, pas toute la session. */
   createdPathsThisTurn?: string[];
@@ -186,10 +192,19 @@ export interface ScoringConfig {
     deletedLinesSaturation?: number;
     turnFileCountSaturation?: number;
   };
-  /** Étage 2 : sévérité par signal et seuil d'escalade, jamais en dur. */
+  /** Étage 2 : sévérités, familles et table de décision, jamais en dur. */
   behavior: {
-    escalateToRedAtOrangeCount: number;
     severities: Record<string, Severity>;
+    signalFamilies: Record<string, string>;
+    decisionTable: Array<{
+      id: string;
+      verdict: Severity;
+      when: {
+        minimumSignalSeverity: "ORANGE" | "RED";
+        minimumDistinctFamilies: number;
+        requiredFamilies?: string[];
+      };
+    }>;
     /** Valeur explicative uniquement ; le verdict suit la table de règles. */
     severityWeights: Record<Severity, number>;
   };
