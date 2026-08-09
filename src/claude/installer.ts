@@ -21,7 +21,9 @@ const HOOK_DEFINITIONS: Array<{ event: string; matcher?: string; timeout?: numbe
   { event: "UserPromptSubmit" },
   { event: "PreToolUse", matcher: "Bash|PowerShell|Edit|Write|NotebookEdit" },
   { event: "PostToolUse", matcher: "Bash|PowerShell|Edit|Write|NotebookEdit" },
+  { event: "PostToolUse", matcher: "Read" },
   { event: "FileChanged", matcher: ".env|package.json|package-lock.json|pnpm-lock.yaml|yarn.lock" },
+  { event: "Stop" },
   { event: "SessionEnd", timeout: 5 },
 ];
 

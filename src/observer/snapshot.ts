@@ -5,7 +5,7 @@ import type {
   PackageManifestSnapshot,
   RepositorySnapshot,
 } from "../domain/types.js";
-import { hashFile } from "../shared/hash.js";
+import { inspectFile } from "../shared/hash.js";
 import { relativeRepoPath } from "../shared/paths.js";
 
 const EXCLUDED_DIRECTORIES = new Set([
@@ -81,7 +81,8 @@ export async function scanRepository(
         try {
           const stat = await fs.stat(absolutePath);
           const relativePath = relativeRepoPath(root, absolutePath);
-          files[relativePath] = { hash: await hashFile(absolutePath), size: stat.size };
+          const inspection = await inspectFile(absolutePath);
+          files[relativePath] = { ...inspection, size: stat.size };
           if (entry.name === "package.json") {
             manifests[relativePath] = await readManifest(absolutePath);
           }

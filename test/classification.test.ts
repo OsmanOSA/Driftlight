@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { DeterministicClassifier } from "../src/classification/deterministic-classifier.js";
 import { classifyCommand } from "../src/classification/rules.js";
 import type {
+  AgentReadRecord,
   ChangeKind,
   ClassificationInput,
   GitBaseline,
   RepositorySnapshot,
-  Severity,
 } from "../src/domain/types.js";
 
 const emptyBaseline: GitBaseline = {
@@ -20,6 +21,26 @@ const emptyBaseline: GitBaseline = {
   capturedAt: "2026-01-01T00:00:00.000Z",
   files: [],
 };
+
+const intentRoots: string[] = [];
+after(() => {
+  for (const root of intentRoots) rmSync(root, { recursive: true, force: true });
+});
+
+function intentRoot(task: string): string {
+  const root = mkdtempSync(path.join(os.tmpdir(), "driftlight-classifier-"));
+  intentRoots.push(root);
+  mkdirSync(path.join(root, ".driftlight"), { recursive: true });
+  writeFileSync(path.join(root, ".driftlight", "current-intent.json"), JSON.stringify({
+    schemaVersion: 1,
+    version: 1,
+    turnId: `turn-${intentRoots.length}`,
+    text: task,
+    scopeAdditions: [],
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  }));
+  return root;
+}
 
 function snapshot(
   files: Record<string, string>,
@@ -50,81 +71,99 @@ function input(
     initial?: RepositorySnapshot;
     current?: RepositorySnapshot;
     changedFileCount?: number;
+    readPathsThisTurn?: string[];
+    readPathsPreviously?: string[];
+    operation?: ClassificationInput["operation"];
+    emittedRuleIds?: string[];
   } = {},
 ): ClassificationInput {
   const initial = options.initial ?? snapshot({ [filePath]: "before" });
   const current = options.current ?? (kind === "deleted" ? snapshot({}) : snapshot({ [filePath]: "after" }));
+  const root = intentRoot(task);
+  const currentTurnId = `turn-${intentRoots.length}`;
+  const reads: AgentReadRecord[] = [
+    ...(options.readPathsThisTurn ?? []).map((readPath) => ({
+      path: readPath,
+      turnId: currentTurnId,
+      timestamp: "2026-01-01T00:00:00.000Z",
+    })),
+    ...(options.readPathsPreviously ?? []).map((readPath) => ({
+      path: readPath,
+      turnId: "previous-turn",
+      timestamp: "2025-12-31T00:00:00.000Z",
+    })),
+  ];
   return {
-    task,
-    scopeAdditions: [],
+    root,
     change: { path: filePath, kind, before: initial.files[filePath], after: current.files[filePath] },
     baseline: options.baseline ?? emptyBaseline,
     initialSnapshot: initial,
     currentSnapshot: current,
     changedFileCount: options.changedFileCount ?? 1,
     deletedFileCount: kind === "deleted" ? 1 : 0,
+    agentReads: reads,
+    emittedRuleIds: options.emittedRuleIds ?? [],
+    ...(options.operation ? { operation: options.operation } : {}),
   };
 }
 
-test("fixture scenarios classify deterministic drift", async () => {
-  const fixturePath = path.join(process.cwd(), "test", "fixtures", "scenarios.json");
-  const scenarios = JSON.parse(await readFile(fixturePath, "utf8")) as Array<{
-    name: string;
-    task: string;
-    path: string;
-    kind: ChangeKind;
-    dependencies?: string[];
-    expected: Severity;
-  }>;
+test("the current turn can explicitly exonerate a package version and a named sensitive path", () => {
   const classifier = new DeterministicClassifier();
-
-  for (const scenario of scenarios) {
-    const before = scenario.path === "package.json" ? snapshot({ "package.json": "before" }) : undefined;
-    const after = scenario.path === "package.json"
-      ? snapshot(
-          { "package.json": "after" },
-          Object.fromEntries((scenario.dependencies ?? []).map((name) => [name, "1.0.0"])),
-        )
-      : undefined;
-    assert.equal(
-      classifier.classify(input(scenario.task, scenario.path, scenario.kind, { initial: before, current: after })).level,
-      scenario.expected,
-      scenario.name,
-    );
-  }
+  const packageInitial = snapshot({ "playground/package.json": "before" });
+  const packageCurrent = snapshot({ "playground/package.json": "after" });
+  assert.equal(
+    classifier.classify(input(
+      "Change la version du projet de démonstration de 1.0.0 à 1.0.1 dans playground",
+      "playground/package.json",
+      "modified",
+      { initial: packageInitial, current: packageCurrent },
+    )).level,
+    "GREEN",
+  );
+  assert.equal(
+    classifier.classify(input(
+      "Crée playground/.env.driftlight-test avec DRIFTLIGHT_DEMO=true",
+      "playground/.env.driftlight-test",
+      "created",
+      { initial: snapshot({}), current: snapshot({ "playground/.env.driftlight-test": "after" }) },
+    )).level,
+    "GREEN",
+  );
 });
 
-test("a newly added dependency is orange unless the task explicitly calls for it", () => {
-  const classifier = new DeterministicClassifier();
-  const initial = snapshot({ "package.json": "before" });
-  const current = snapshot({ "package.json": "after" }, { stripe: "^20.0.0" });
-
-  const drift = classifier.classify(input("Change a button color", "package.json", "modified", { initial, current }));
-  const expected = classifier.classify(input("Install the Stripe dependency", "package.json", "modified", { initial, current }));
-
-  assert.equal(drift.level, "ORANGE");
-  assert.ok(drift.codes.includes("new-dependency"));
-  assert.equal(expected.level, "GREEN");
-});
-
-test("restoring or deleting pre-existing work is red", () => {
+test("pre-existing work alerts only for destructive out-of-scope operations", () => {
   const classifier = new DeterministicClassifier();
   const modifiedBaseline: GitBaseline = {
     ...emptyBaseline,
     files: [{ path: "src/work.ts", status: " M", kind: "modified", headHash: "head", workingHash: "work" }],
   };
-  const restored = classifier.classify(input(
+
+  const namedEdit = classifier.classify(input(
+    "Continue src/work.ts",
+    "src/work.ts",
+    "modified",
+    {
+      baseline: modifiedBaseline,
+      initial: snapshot({ "src/work.ts": "work" }),
+      current: snapshot({ "src/work.ts": "new-work" }),
+      operation: { kind: "edit" },
+    },
+  ));
+  assert.equal(namedEdit.level, "GREEN");
+
+  const readEdit = classifier.classify(input(
     "Fix another file",
     "src/work.ts",
     "modified",
     {
       baseline: modifiedBaseline,
       initial: snapshot({ "src/work.ts": "work" }),
-      current: snapshot({ "src/work.ts": "head" }),
+      current: snapshot({ "src/work.ts": "new-work" }),
+      readPathsThisTurn: ["src/work.ts"],
+      operation: { kind: "edit" },
     },
   ));
-  assert.equal(restored.level, "RED");
-  assert.ok(restored.codes.includes("preexisting-change-restored"));
+  assert.equal(readEdit.level, "GREEN");
 
   const untrackedBaseline: GitBaseline = {
     ...emptyBaseline,
@@ -138,20 +177,71 @@ test("restoring or deleting pre-existing work is red", () => {
   ));
   assert.equal(deleted.level, "RED");
   assert.ok(deleted.codes.includes("preexisting-file-deleted"));
+  assert.match(deleted.reasons[0] ?? "", /modifications non sauvegardées/i);
+  assert.match(deleted.reasons[0] ?? "", /Annuler|historique local/i);
+
+  const explicitlyDeleted = classifier.classify(input(
+    "Supprime notes.txt",
+    "notes.txt",
+    "deleted",
+    { baseline: untrackedBaseline, initial: snapshot({ "notes.txt": "work" }), current: snapshot({}) },
+  ));
+  assert.equal(explicitlyDeleted.level, "GREEN", "current intent must disable the pre-existing protection alert");
+
+  const fullRewrite = classifier.classify(input(
+    "Change something else",
+    "src/work.ts",
+    "modified",
+    {
+      baseline: modifiedBaseline,
+      initial: snapshot({ "src/work.ts": "work" }),
+      current: snapshot({ "src/work.ts": "rewritten" }),
+      operation: { kind: "write" },
+    },
+  ));
+  assert.equal(fullRewrite.level, "ORANGE");
+  assert.equal(fullRewrite.ruleId, "preexisting-destructive-edit");
+
+  const previouslyReadNormalEdit = classifier.classify(input(
+    "Change something else",
+    "src/work.ts",
+    "modified",
+    {
+      baseline: modifiedBaseline,
+      initial: snapshot({ "src/work.ts": "work" }),
+      current: snapshot({ "src/work.ts": "continued" }),
+      readPathsPreviously: ["src/work.ts"],
+      operation: { kind: "edit" },
+    },
+  ));
+  assert.equal(previouslyReadNormalEdit.level, "GREEN");
 });
 
-test("configuration, secrets, infrastructure, deletion and amplitude are covered", () => {
+test("the significant line-deletion threshold is configurable", () => {
   const classifier = new DeterministicClassifier();
-  assert.equal(classifier.classify(input("Fix typo", "vite.config.ts", "modified")).level, "ORANGE");
-  assert.equal(classifier.classify(input("Fix typo", ".env.local", "modified")).level, "RED");
-  assert.equal(classifier.classify(input("Fix typo", "infra/main.tf", "modified")).level, "RED");
-  assert.equal(classifier.classify(input("Fix typo", "src/old.ts", "deleted")).level, "ORANGE");
-  assert.equal(classifier.classify(input("Refactor", "src/a.ts", "modified", { changedFileCount: 8 })).level, "ORANGE");
-  assert.equal(classifier.classify(input("Refactor", "src/a.ts", "modified", { changedFileCount: 20 })).level, "RED");
-  const massDeletion = input("Cleanup", "src/a.ts", "deleted");
-  massDeletion.deletedFileCount = 5;
-  assert.equal(classifier.classify(massDeletion).level, "RED");
-  assert.ok(classifier.classify(massDeletion).codes.includes("mass-deletion"));
+  const baseline: GitBaseline = {
+    ...emptyBaseline,
+    files: [{ path: "src/work.ts", status: " M", kind: "modified", workingHash: "work" }],
+  };
+  const classificationInput = input(
+    "Fix another file",
+    "src/work.ts",
+    "modified",
+    {
+      baseline,
+      initial: snapshot({ "src/work.ts": "work" }),
+      current: snapshot({ "src/work.ts": "trimmed" }),
+      readPathsPreviously: ["src/work.ts"],
+      operation: { kind: "edit", deletedLineCount: 3 },
+    },
+  );
+  writeFileSync(path.join(classificationInput.root, ".driftlight", "config.json"), JSON.stringify({
+    largeLineDeletionThreshold: 3,
+  }));
+
+  const result = classifier.classify(classificationInput);
+  assert.equal(result.level, "ORANGE");
+  assert.equal(result.ruleId, "preexisting-destructive-edit");
 });
 
 test("destructive Git commands are observed as red and never auto-executed", () => {

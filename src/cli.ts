@@ -4,16 +4,23 @@ import { pathToFileURL } from "node:url";
 import { handleClaudeHook } from "./claude/handler.js";
 import { installClaudeHooks } from "./claude/installer.js";
 import type { ClaudeHookInput, SessionRecord } from "./domain/types.js";
+import { loadConfigSync } from "./config/config.js";
+import { captureGitBaseline } from "./git/baseline.js";
+import { addCurrentScope, writeCurrentIntent } from "./intent/current-intent.js";
+import { dispatchNotifications } from "./notify/dispatcher.js";
 import { PollingObserver } from "./observer/polling-observer.js";
 import {
   addIntent,
   createSession,
   loadRequestedSession,
+  markEventFeedback,
   processChanges,
   resolveSessionStore,
 } from "./session/service.js";
 import { SessionStore } from "./session/store.js";
-import { formatSessionSummary, formatSignal } from "./ui/terminal.js";
+import { acknowledgeCurrentStatus } from "./status/current-status.js";
+import { formatScoreExplanation, formatSessionSummary, formatSignal } from "./ui/terminal.js";
+import { applyTerminalTitle, pushTerminalTitle, restoreTerminalTitle } from "./ui/terminal-title.js";
 
 function option(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -40,12 +47,15 @@ function help(): string {
 Commandes :
   driftlight start --task "Demande utilisateur" [--cwd .] [--interval 400]
   driftlight status [--session latest] [--cwd .]
+  driftlight explain <event-id> [--session latest] [--cwd .]
+  driftlight mark <event-id> --noise|--useful [--session latest] [--cwd .]
   driftlight mark-expected <event-id> [--session latest] [--cwd .]
   driftlight add-scope "Nouvelle instruction ou chemin" [--session latest] [--cwd .]
+  driftlight ack [--cwd .]
   driftlight claude install [--cwd .]
   driftlight hook                       # appelé par Claude Code via stdin JSON
 
-Tout reste local dans .driftlight/. Aucune action n'est bloquée et aucun rollback n'est exécuté.`;
+Tout reste local dans .driftlight/. Les alertes rouges demandent confirmation ; aucun rollback n'est exécuté.`;
 }
 
 async function readStdin(): Promise<string> {
@@ -63,15 +73,26 @@ async function runStart(args: string[]): Promise<void> {
 
   const session = await createSession({ cwd, task, source: "cli" });
   const store = new SessionStore(session.cwd);
+  await writeCurrentIntent(session.cwd, task, { turnId: `cli-${session.id}`, resetScope: true });
   await store.save(session);
-  console.log(`🟢 DriftLight · surveillance locale active`);
+  console.log(`DriftLight · surveillance locale active`);
   console.log(`   ${session.id} · ${session.baseline.branch ?? "hors Git"} · ${session.baseline.files.length} changement(s) préexistant(s) protégé(s)`);
+
+  const config = loadConfigSync(session.cwd);
+  pushTerminalTitle(config);
+  applyTerminalTitle(session.cwd, config);
 
   const observer = new PollingObserver(session.cwd, session.initialSnapshot, interval);
   observer.start(async ({ changes, snapshot }) => {
     const events = processChanges(session, changes, snapshot);
     await store.save(session);
-    for (const event of events) console.log(formatSignal(event));
+    for (const event of events) {
+      const signal = formatSignal(event);
+      if (signal) console.log(signal);
+    }
+    // Mode CLI : aucune action n'est bloquée, l'observateur constate après coup.
+    await dispatchNotifications(session.cwd, events, config, session.id);
+    applyTerminalTitle(session.cwd, config);
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -85,13 +106,19 @@ async function runStart(args: string[]): Promise<void> {
           const finalBatch = await observer.scanOnce();
           if (finalBatch.changes.length > 0) {
             const events = processChanges(session, finalBatch.changes, finalBatch.snapshot);
-            for (const event of events) console.log(formatSignal(event));
+            for (const event of events) {
+              const signal = formatSignal(event);
+              if (signal) console.log(signal);
+            }
+            await dispatchNotifications(session.cwd, events, config, session.id);
           }
           session.endedAt = new Date().toISOString();
           await store.save(session);
+          restoreTerminalTitle(session.cwd, config);
           console.log(`DriftLight · session enregistrée dans ${store.sessionPath(session.id)}`);
           resolve();
         } catch (error) {
+          restoreTerminalTitle(session.cwd, config);
           reject(error);
         }
       })();
@@ -114,6 +141,15 @@ async function runStatus(args: string[]): Promise<void> {
   console.log(formatSessionSummary(session));
 }
 
+async function runExplain(args: string[]): Promise<void> {
+  const eventId = positional(args, "explain")[0];
+  if (!eventId) throw new Error("Indiquez l'identifiant de l'événement à expliquer.");
+  const { session } = await requestedSession(args);
+  const event = session.events.find((item) => item.id === eventId);
+  if (!event) throw new Error(`Événement introuvable : ${eventId}`);
+  console.log(formatScoreExplanation(event));
+}
+
 async function runMarkExpected(args: string[]): Promise<void> {
   const eventId = positional(args, "mark-expected")[0];
   if (!eventId) throw new Error("Indiquez l'identifiant de l'événement à acquitter.");
@@ -126,13 +162,36 @@ async function runMarkExpected(args: string[]): Promise<void> {
   console.log(`✓ ${eventId} marqué comme attendu pour cette alerte.`);
 }
 
+async function runMark(args: string[]): Promise<void> {
+  const eventId = positional(args, "mark")[0];
+  if (!eventId) throw new Error("Indiquez l'identifiant de l'alerte à qualifier.");
+  const noise = args.includes("--noise");
+  const useful = args.includes("--useful");
+  if (noise === useful) throw new Error("Utilisez exactement une option : --noise ou --useful.");
+  const { store, session } = await requestedSession(args);
+  const event = markEventFeedback(session, eventId, noise ? "noise" : "useful");
+  if (!event) throw new Error(`Alerte orange ou rouge introuvable : ${eventId}`);
+  await store.save(session);
+  console.log(`✓ ${eventId} qualifiée comme ${noise ? "bruit" : "utile"}.`);
+}
+
 async function runAddScope(args: string[]): Promise<void> {
   const text = option(args, "--text") ?? positional(args, "add-scope").join(" ");
   if (!text.trim()) throw new Error("Indiquez l'instruction ou le chemin à ajouter au scope.");
   const { store, session } = await requestedSession(args);
   addIntent(session, text, "manual-scope");
+  await addCurrentScope(session.cwd, text);
   await store.save(session);
   console.log(`✓ Scope actif mis à jour (version ${session.intents.length}) : ${text}`);
+}
+
+async function runAck(args: string[]): Promise<void> {
+  const cwd = path.resolve(option(args, "--cwd") ?? process.cwd());
+  const root = (await captureGitBaseline(cwd)).root;
+  await acknowledgeCurrentStatus(root);
+  // Le statut repasse au vert : le titre du terminal doit suivre immédiatement.
+  applyTerminalTitle(root, loadConfigSync(root));
+  console.log(`✓ Statut DriftLight acquitté.`);
 }
 
 async function runClaude(args: string[]): Promise<void> {
@@ -140,7 +199,7 @@ async function runClaude(args: string[]): Promise<void> {
   const cwd = path.resolve(option(args, "--cwd") ?? process.cwd());
   const settingsPath = await installClaudeHooks({ cwd });
   console.log(`✓ Hooks Claude Code installés sans remplacer les hooks existants : ${settingsPath}`);
-  console.log(`  Mode observation uniquement : aucune décision allow/deny n'est renvoyée.`);
+  console.log(`  Les verdicts rouges demanderont confirmation avant l'action (configuration locale modifiable).`);
 }
 
 async function runHook(): Promise<void> {
@@ -156,8 +215,11 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   switch (command) {
     case "start": await runStart(args); break;
     case "status": await runStatus(args); break;
+    case "explain": await runExplain(args); break;
+    case "mark": await runMark(args); break;
     case "mark-expected": await runMarkExpected(args); break;
     case "add-scope": await runAddScope(args); break;
+    case "ack": await runAck(args); break;
     case "claude": await runClaude(args); break;
     case "hook": await runHook(); break;
     case "help":

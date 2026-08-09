@@ -20,6 +20,7 @@ test("polling observer reports creation, modification and deletion", async (cont
   context.after(async () => await fs.rm(root, { recursive: true, force: true }));
   await fs.writeFile(path.join(root, "existing.txt"), "one\n");
   const initial = await scanRepository(root);
+  assert.equal(initial.files["existing.txt"]?.lineCount, 1);
   const observer = new PollingObserver(root, initial, 40);
   const observed: ObservedChange[] = [];
   observer.start(({ changes }) => {

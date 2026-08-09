@@ -24,7 +24,10 @@ test("Claude hook installer preserves existing hooks and uses exec form", () => 
   assert.ok(Array.isArray(merged.hooks?.PreToolUse));
   assert.ok(Array.isArray(merged.hooks?.PostToolUse));
   assert.ok(Array.isArray(merged.hooks?.FileChanged));
+  assert.ok(Array.isArray(merged.hooks?.Stop));
   assert.ok(Array.isArray(merged.hooks?.SessionEnd));
+  const postGroups = merged.hooks?.PostToolUse as Array<{ matcher?: string }>;
+  assert.ok(postGroups.some((group) => group.matcher === "Read"));
 
   mergeClaudeHookSettings(merged, handler);
   const groups = merged.hooks?.PreToolUse as Array<{ hooks: unknown[] }>;

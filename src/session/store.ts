@@ -33,12 +33,17 @@ export class SessionStore {
   }
 
   public async latest(): Promise<SessionRecord | null> {
+    const sessions = await this.list();
+    return sessions[0] ?? null;
+  }
+
+  public async list(): Promise<SessionRecord[]> {
     let names: string[];
     try {
       names = await fs.readdir(this.sessionsDirectory);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") return null;
+      if (code === "ENOENT") return [];
       throw error;
     }
 
@@ -51,8 +56,10 @@ export class SessionStore {
         })),
     );
     candidates.sort((left, right) => right.stat.mtimeMs - left.stat.mtimeMs);
-    const latest = candidates[0];
-    if (!latest) return null;
-    return JSON.parse(await fs.readFile(path.join(this.sessionsDirectory, latest.name), "utf8")) as SessionRecord;
+    return await Promise.all(
+      candidates.map(async (candidate) => JSON.parse(
+        await fs.readFile(path.join(this.sessionsDirectory, candidate.name), "utf8"),
+      ) as SessionRecord),
+    );
   }
 }

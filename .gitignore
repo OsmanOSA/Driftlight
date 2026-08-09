@@ -4,3 +4,8 @@ dist/
 coverage/
 *.tsbuildinfo
 
+.claude/
+research/
+.last30days-driftlight-competition-plan.json
+.last30days-driftlight-plan.json
+driftlight.scoring.json
