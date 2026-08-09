@@ -1,0 +1,45 @@
+[
+  {
+    "name": "typo stays local",
+    "task": "Fix the typo in the pricing page",
+    "path": "src/pages/Pricing.tsx",
+    "kind": "modified",
+    "expected": "GREEN"
+  },
+  {
+    "name": "visual task adds dependency",
+    "task": "Change the Checkout button color to blue",
+    "path": "package.json",
+    "kind": "modified",
+    "dependencies": ["color"],
+    "expected": "ORANGE"
+  },
+  {
+    "name": "typo creates migration",
+    "task": "Fix a typo",
+    "path": "db/migrations/001_checkout.sql",
+    "kind": "created",
+    "expected": "RED"
+  },
+  {
+    "name": "explicit database work remains visible",
+    "task": "Add the database migration for checkout",
+    "path": "db/migrations/002_checkout.sql",
+    "kind": "created",
+    "expected": "ORANGE"
+  },
+  {
+    "name": "unexpected auth",
+    "task": "Update the checkout button",
+    "path": "src/auth/permissions.ts",
+    "kind": "modified",
+    "expected": "RED"
+  },
+  {
+    "name": "unexpected ci",
+    "task": "Fix README typo",
+    "path": ".github/workflows/deploy.yml",
+    "kind": "modified",
+    "expected": "RED"
+  }
+]
