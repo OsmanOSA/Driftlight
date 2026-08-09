@@ -15,7 +15,7 @@ import type {
   SessionEvent,
 } from "../src/domain/types.js";
 import { scanRepository } from "../src/observer/snapshot.js";
-import { buildImportGraph } from "../src/profile/import-graph.js";
+import { buildImportGraph, updateImportGraph } from "../src/profile/import-graph.js";
 import { buildRepoProfile, repoProfilePath } from "../src/profile/repo-profile.js";
 import { formatScoreExplanation } from "../src/ui/terminal.js";
 
@@ -88,14 +88,16 @@ function youngProfile(configRoot: string): RepoProfile {
 }
 
 function graph(): ImportGraph {
+  const fillers = Array.from({ length: 17 }, (_, index) => `src/filler-${index}.ts`);
   return {
     schemaVersion: 1,
     generatedAt: "2026-01-01T00:00:00.000Z",
-    nodes: ["src/anchor.ts", "src/direct.ts", "src/unconnected.ts"],
+    nodes: ["src/anchor.ts", "src/direct.ts", "src/unconnected.ts", ...fillers],
     edges: {
       "src/anchor.ts": ["src/direct.ts"],
       "src/direct.ts": [],
       "src/unconnected.ts": [],
+      ...Object.fromEntries(fillers.map((filePath) => [filePath, []])),
     },
     unresolvedImports: {},
   };
@@ -128,7 +130,7 @@ test("young repositories expose unavailable history signals and renormalize with
   assert.ok(Number.isFinite(breakdown.score ?? Number.NaN));
 });
 
-test("an explicitly named sensitive file remains green through its negative score", () => {
+test("the shadow score contains no intent or sensitive-file contribution", () => {
   const config = loadScoringConfigSync(process.cwd());
   const breakdown = scoreClassification(
     classificationInput(".env"),
@@ -139,7 +141,12 @@ test("an explicitly named sensitive file remains green through its negative scor
   );
 
   assert.equal(breakdown.verdict, "GREEN");
-  assert.ok((breakdown.signals.find((signal) => signal.id === "explicitIntent")?.contribution ?? 0) < 0);
+  assert.deepEqual(breakdown.signals.map((signal) => signal.id), [
+    "importDistance",
+    "fileRarity",
+    "anchorCooccurrence",
+  ]);
+  assert.equal(breakdown.signals.find((signal) => signal.id === "importDistance")?.available, false);
 });
 
 test("a disconnected file scores high while a direct dependency stays low", () => {
@@ -215,4 +222,18 @@ test("repo profile marks short history unavailable and import graph resolves tsc
   assert.ok(profile.sensitivity.files["ignored.secret"]?.some((source) => source.startsWith("gitignore:")));
   assert.ok((await fs.stat(repoProfilePath(root))).isFile());
   assert.deepEqual(importGraph.edges["src/anchor.ts"], ["src/lib/direct.ts", "src/lib/lazy.ts"]);
+
+  const cached = await buildRepoProfile(root, repository, loadScoringConfigSync(root));
+  assert.equal(cached.generatedAt, profile.generatedAt, "same HEAD and config reuse the disk cache");
+
+  await fs.writeFile(path.join(root, "src", "anchor.ts"), "export const anchor = 1;\n");
+  const updatedSnapshot = await scanRepository(root);
+  const updatedGraph = await updateImportGraph(root, updatedSnapshot, [{
+    path: "src/anchor.ts",
+    kind: "modified",
+    before: repository.files["src/anchor.ts"],
+    after: updatedSnapshot.files["src/anchor.ts"],
+  }]);
+  assert.deepEqual(updatedGraph?.edges["src/anchor.ts"], []);
+  assert.deepEqual(updatedGraph?.edges["src/lib/direct.ts"], [], "unmodified nodes remain intact");
 });

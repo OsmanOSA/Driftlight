@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { DeterministicClassifier } from "../classification/deterministic-classifier.js";
 import { absoluteScoreBreakdown } from "../classification/scoring-engine.js";
-import { highestSeverity } from "../classification/rules.js";
+import { behaviorScoreBreakdown } from "../classification/behavior-signals.js";
+import { recordFeedbackStats } from "../classification/feedback-stats.js";
+import { changeFromAbsolutePath, highestSeverity } from "../classification/rules.js";
 import type {
   AlertFeedback,
   AgentReadRecord,
@@ -21,7 +23,8 @@ import { loadScoringConfigSync } from "../config/scoring-config.js";
 import { scanRepository } from "../observer/snapshot.js";
 import { readCurrentIntentSync } from "../intent/current-intent.js";
 import { buildImportGraph } from "../profile/import-graph.js";
-import { buildRepoProfile } from "../profile/repo-profile.js";
+import { startRepoProfileBuild } from "../profile/repo-profile.js";
+import { isInsideRoot } from "../shared/paths.js";
 import { recordCurrentStatus } from "../status/current-status.js";
 import { SessionStore } from "./store.js";
 
@@ -37,11 +40,8 @@ export async function createSession(options: CreateSessionOptions): Promise<Sess
   const baseline = await captureGitBaseline(options.cwd);
   const root = baseline.root;
   const initialSnapshot = await scanRepository(root);
-  const scoringConfig = loadScoringConfigSync(root);
-  await Promise.all([
-    buildRepoProfile(root, initialSnapshot, scoringConfig),
-    buildImportGraph(root, initialSnapshot),
-  ]);
+  await buildImportGraph(root, initialSnapshot);
+  startRepoProfileBuild(root);
   const now = new Date().toISOString();
   const initialIntent: IntentVersion | undefined = options.task
     ? { version: 1, text: options.task, source: "initial", addedAt: now }
@@ -64,26 +64,17 @@ export async function createSession(options: CreateSessionOptions): Promise<Sess
     expectedEventIds: [],
     agentReads: [],
     touchedPathsByTurn: {},
+    declaredPlanPathsByTurn: {},
   };
 }
 
 const PREEXISTING_PROTECTION_RULES = new Set([
   "preexisting-file-deleted",
-  "preexisting-destructive-edit",
+  "preexisting-file-rewritten",
 ]);
 
 function isPreexistingProtectionEvent(event: SessionEvent): boolean {
   return event.codes.some((code) => PREEXISTING_PROTECTION_RULES.has(code));
-}
-
-function isTurnFileVolumeDriven(event: SessionEvent): boolean {
-  const breakdown = event.scoreBreakdown;
-  if (breakdown.mode !== "scored" || event.level === "GREEN" || breakdown.unclampedScore === null) return false;
-  const contribution = breakdown.signals.find((signal) => signal.id === "turnFileCount")?.contribution ?? 0;
-  const threshold = event.level === "RED" ? breakdown.thresholds.red : breakdown.thresholds.orange;
-  return contribution > 0
-    && breakdown.unclampedScore >= threshold
-    && breakdown.unclampedScore - contribution < threshold;
 }
 
 export function appendSessionEvents(session: SessionRecord, candidates: SessionEvent[]): SessionEvent[] {
@@ -97,7 +88,6 @@ export function appendSessionEvents(session: SessionRecord, candidates: SessionE
       );
       if (duplicate) continue;
     }
-    if (isTurnFileVolumeDriven(candidate) && session.events.some(isTurnFileVolumeDriven)) continue;
     session.events.push(candidate);
     accepted.push(candidate);
   }
@@ -129,6 +119,26 @@ export function recordTurnTouchedPaths(session: SessionRecord, turnId: string | 
   byTurn[turnId] = [...new Set([...(byTurn[turnId] ?? []), ...paths])];
 }
 
+export function recordDeclaredPlanPaths(session: SessionRecord, turnId: string, paths: string[]): void {
+  if (paths.length === 0) return;
+  const byTurn = session.declaredPlanPathsByTurn ??= {};
+  byTurn[turnId] = [...new Set([...(byTurn[turnId] ?? []), ...paths])];
+}
+
+function createdPathsThisTurn(
+  session: SessionRecord,
+  turnId: string | undefined,
+  pending: ObservedChange[] = [],
+): string[] {
+  if (!turnId) return pending.filter((change) => change.kind === "created").map((change) => change.path);
+  return [...new Set([
+    ...session.events
+      .filter((event) => event.turnId === turnId && event.changeKind === "created" && event.path)
+      .map((event) => event.path as string),
+    ...pending.filter((change) => change.kind === "created").map((change) => change.path),
+  ])];
+}
+
 function deletedPathCount(session: SessionRecord, pending: ObservedChange[]): number {
   const paths = new Set(
     session.events
@@ -150,6 +160,8 @@ export function eventFromFindings(
   const level = findings.length > 0 ? highestSeverity(findings) : "GREEN";
   const relevant = findings.filter((item) => item.severity === level);
   const ruleId = relevant[0]?.code ?? "session-lifecycle";
+  const scoringConfig = loadScoringConfigSync(root);
+  const proposedBehavior = type === "proposed-action" && findings.length > 0;
   return {
     id: `event-${Date.now()}-${randomUUID().slice(0, 8)}`,
     timestamp: new Date().toISOString(),
@@ -158,9 +170,82 @@ export function eventFromFindings(
     reasons: relevant.map((item) => item.reason),
     codes: relevant.map((item) => item.code),
     ruleId,
-    scoreBreakdown: absoluteScoreBreakdown(loadScoringConfigSync(root), level, ruleId),
+    scoreBreakdown: proposedBehavior
+      ? behaviorScoreBreakdown(
+          findings.map((item) => ({
+            id: item.code,
+            severity: item.severity,
+            reason: item.reason,
+            available: true,
+            triggered: true,
+            rawValue: true,
+          })),
+          level,
+          scoringConfig,
+        )
+      : absoluteScoreBreakdown(scoringConfig, level, ruleId),
     expected: false,
+    ...(proposedBehavior ? { stage: "behavior" as const } : {}),
     ...(detail ? { detail } : {}),
+  };
+}
+
+/**
+ * Classifie une modification de fichier avant son exécution. Cette fonction
+ * appartient au Core : les adapters Claude/Codex ne font que traduire leurs
+ * payloads natifs vers ces paramètres communs.
+ */
+export function classifyProposedFileChange(
+  session: SessionRecord,
+  absolutePath: string,
+  kind: ObservedChange["kind"],
+  operation: "edit" | "write" | "rename",
+  deletedLineCount = 0,
+  proposedContent?: string,
+  fullFileReformat?: boolean,
+  classifier: Classifier = new DeterministicClassifier(),
+): SessionEvent | null {
+  if (!isInsideRoot(session.cwd, absolutePath)) return null;
+  const change = changeFromAbsolutePath(session.cwd, absolutePath, kind);
+  if (!change) return null;
+  change.before = session.lastSnapshot.files[change.path];
+  const currentIntent = readCurrentIntentSync(session.cwd);
+  const classification = classifier.classify({
+    root: session.cwd,
+    change,
+    baseline: session.baseline,
+    initialSnapshot: session.initialSnapshot,
+    currentSnapshot: session.lastSnapshot,
+    changedFileCount: turnTouchedPathCount(session, currentIntent?.turnId, [change]),
+    deletedFileCount: session.events.filter((event) => event.changeKind === "deleted").length,
+    agentReads: session.agentReads ?? [],
+    declaredPlanPaths: currentIntent ? session.declaredPlanPathsByTurn?.[currentIntent.turnId] ?? [] : [],
+    createdPathsThisTurn: createdPathsThisTurn(session, currentIntent?.turnId, [change]),
+    emittedRuleIds: session.events.flatMap((event) => event.codes),
+    operation: {
+      kind: operation,
+      deletedLineCount,
+      ...(proposedContent !== undefined ? { proposedContent } : {}),
+      ...(fullFileReformat !== undefined ? { fullFileReformat } : {}),
+    },
+  });
+  return {
+    id: `event-${Date.now()}-${randomUUID().slice(0, 8)}`,
+    timestamp: new Date().toISOString(),
+    type: "proposed-action",
+    path: change.path,
+    changeKind: change.kind,
+    level: classification.level,
+    reasons: classification.reasons,
+    codes: classification.codes,
+    ruleId: classification.ruleId,
+    scoreBreakdown: classification.scoreBreakdown,
+    expected: false,
+    ...(classification.intentVersion ? { intentVersion: classification.intentVersion } : {}),
+    ...(classification.turnId ? { turnId: classification.turnId } : {}),
+    stage: classification.stage,
+    ...(classification.exemptedBy ? { exemptedBy: classification.exemptedBy } : {}),
+    ...(classification.shadowScore ? { shadowScore: classification.shadowScore } : {}),
   };
 }
 
@@ -201,7 +286,9 @@ export function markEventFeedback(
 ): SessionEvent | null {
   const event = session.events.find((item) => item.id === eventId && item.level !== "GREEN");
   if (!event) return null;
+  const previous = event.feedback;
   event.feedback = feedback;
+  if (previous !== feedback) recordFeedbackStats(session.cwd, event, previous, feedback);
   return event;
 }
 
@@ -225,6 +312,8 @@ export function processChanges(
       changedFileCount: count,
       deletedFileCount: deletionCount,
       agentReads: session.agentReads ?? [],
+      declaredPlanPaths: currentIntent ? session.declaredPlanPathsByTurn?.[currentIntent.turnId] ?? [] : [],
+      createdPathsThisTurn: createdPathsThisTurn(session, currentIntent?.turnId, changes),
       emittedRuleIds: session.events.flatMap((event) => event.codes),
       operation: {
         kind: "observed",
@@ -248,6 +337,9 @@ export function processChanges(
       expected: false,
       ...(classification.intentVersion ? { intentVersion: classification.intentVersion } : {}),
       ...(classification.turnId ? { turnId: classification.turnId } : {}),
+      stage: classification.stage,
+      ...(classification.exemptedBy ? { exemptedBy: classification.exemptedBy } : {}),
+      ...(classification.shadowScore ? { shadowScore: classification.shadowScore } : {}),
     };
     events.push(...appendSessionEvents(session, [event]));
   }

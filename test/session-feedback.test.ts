@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { readFeedbackStats } from "../src/classification/feedback-stats.js";
 import type { SessionRecord } from "../src/domain/types.js";
 import { markEventFeedback } from "../src/session/service.js";
 import { formatSessionSummary, formatSignal } from "../src/ui/terminal.js";
@@ -19,14 +23,14 @@ function breakdown(level: "GREEN" | "ORANGE" | "RED", ruleId: string) {
   };
 }
 
-function sessionFixture(): SessionRecord {
+function sessionFixture(root = "/repo"): SessionRecord {
   const snapshot = { capturedAt: "2026-01-01T00:00:00.000Z", files: {}, manifests: {} };
   const initial = { version: 1, text: "Fix typo", source: "initial" as const, addedAt: "2026-01-01T00:00:00.000Z" };
   return {
     schemaVersion: 1,
     id: "feedback-session",
     source: "cli",
-    cwd: "/repo",
+    cwd: root,
     startedAt: "2026-01-01T00:00:00.000Z",
     intents: [initial],
     currentIntent: initial,
@@ -56,4 +60,21 @@ test("feedback marks alerts and the summary hides green events", () => {
   assert.match(summary, /package\.json/);
   assert.match(summary, /\.env/);
   assert.equal(formatSignal(session.events[0]!), null, "green events must not render anywhere");
+});
+
+test("feedback persists behavior precision counters across sessions", async (context) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "driftlight-feedback-"));
+  context.after(async () => await fs.rm(root, { recursive: true, force: true }));
+  const session = sessionFixture(root);
+  const orange = session.events.find((event) => event.id === "orange");
+  if (orange) {
+    orange.stage = "behavior";
+    orange.codes = ["dependency-added"];
+  }
+  markEventFeedback(session, "orange", "noise");
+  markEventFeedback(session, "orange", "useful");
+  const stats = readFeedbackStats(root);
+  assert.deepEqual(stats.totals, { noise: 0, useful: 1 });
+  assert.deepEqual(stats.byStage.behavior, { noise: 0, useful: 1 });
+  assert.deepEqual(stats.bySignal["dependency-added"], { noise: 0, useful: 1 });
 });

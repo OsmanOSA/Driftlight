@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { ImportGraph, RepositorySnapshot } from "../domain/types.js";
+import type { ImportGraph, ObservedChange, RepositorySnapshot } from "../domain/types.js";
 import { toPosixPath } from "../shared/paths.js";
 
 const SOURCE_EXTENSION = /\.(?:[cm]?[jt]sx?)$/i;
@@ -158,32 +158,57 @@ export function readImportGraphSync(root: string): ImportGraph | null {
   }
 }
 
+async function writeImportGraph(root: string, graph: ImportGraph): Promise<void> {
+  const target = importGraphPath(root);
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+  await fs.writeFile(temporary, `${JSON.stringify(graph, null, 2)}\n`, "utf8");
+  await fs.rename(temporary, target);
+}
+
+async function aliases(root: string, snapshot: RepositorySnapshot): Promise<TsConfigAliases[]> {
+  const tsconfigPaths = Object.keys(snapshot.files).filter((filePath) => /(^|\/)tsconfig(?:\.[^/]*)?\.json$/i.test(filePath));
+  return (await Promise.all(tsconfigPaths.map(async (filePath) => await loadTsConfig(root, filePath))))
+    .filter((config): config is TsConfigAliases => config !== null);
+}
+
+async function importsForFile(
+  root: string,
+  filePath: string,
+  nodeSet: Set<string>,
+  configs: TsConfigAliases[],
+): Promise<{ edges: string[]; unresolved: string[] }> {
+  try {
+    const source = await fs.readFile(path.join(root, ...filePath.split("/")), "utf8");
+    const resolved = new Set<string>();
+    const unresolved: string[] = [];
+    for (const specifier of importSpecifiers(source)) {
+      const target = resolveImport(filePath, specifier, nodeSet, configs);
+      if (target) resolved.add(target);
+      else if (specifier.startsWith(".") || matchingAlias(
+        specifier,
+        aliasesForImporter(configs, filePath) ?? { directory: "", baseUrl: ".", paths: {} },
+      ).length > 0) {
+        unresolved.push(specifier);
+      }
+    }
+    return { edges: [...resolved].sort(), unresolved: unresolved.sort() };
+  } catch {
+    return { edges: [], unresolved: [] };
+  }
+}
+
 export async function buildImportGraph(root: string, snapshot: RepositorySnapshot): Promise<ImportGraph> {
   const nodes = Object.keys(snapshot.files).filter((filePath) => SOURCE_EXTENSION.test(filePath)).sort();
   const nodeSet = new Set(nodes);
-  const tsconfigPaths = Object.keys(snapshot.files).filter((filePath) => /(^|\/)tsconfig(?:\.[^/]*)?\.json$/i.test(filePath));
-  const configs = (await Promise.all(tsconfigPaths.map(async (filePath) => await loadTsConfig(root, filePath))))
-    .filter((config): config is TsConfigAliases => config !== null);
+  const configs = await aliases(root, snapshot);
   const edges: Record<string, string[]> = {};
   const unresolvedImports: Record<string, string[]> = {};
 
   await Promise.all(nodes.map(async (filePath) => {
-    try {
-      const source = await fs.readFile(path.join(root, ...filePath.split("/")), "utf8");
-      const resolved = new Set<string>();
-      const unresolved: string[] = [];
-      for (const specifier of importSpecifiers(source)) {
-        const target = resolveImport(filePath, specifier, nodeSet, configs);
-        if (target) resolved.add(target);
-        else if (specifier.startsWith(".") || matchingAlias(specifier, aliasesForImporter(configs, filePath) ?? { directory: "", baseUrl: ".", paths: {} }).length > 0) {
-          unresolved.push(specifier);
-        }
-      }
-      edges[filePath] = [...resolved].sort();
-      if (unresolved.length > 0) unresolvedImports[filePath] = unresolved.sort();
-    } catch {
-      edges[filePath] = [];
-    }
+    const result = await importsForFile(root, filePath, nodeSet, configs);
+    edges[filePath] = result.edges;
+    if (result.unresolved.length > 0) unresolvedImports[filePath] = result.unresolved;
   }));
 
   const graph: ImportGraph = {
@@ -193,10 +218,46 @@ export async function buildImportGraph(root: string, snapshot: RepositorySnapsho
     edges,
     unresolvedImports,
   };
-  const target = importGraphPath(root);
-  await fs.mkdir(path.dirname(target), { recursive: true });
-  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
-  await fs.writeFile(temporary, `${JSON.stringify(graph, null, 2)}\n`, "utf8");
-  await fs.rename(temporary, target);
+  await writeImportGraph(root, graph);
+  return graph;
+}
+
+/**
+ * Invalidation incrémentale hors PreToolUse. Une simple modification de source
+ * ne recalcule que ses imports ; un changement de topologie ou de tsconfig
+ * reconstruit le graphe, car il peut résoudre les imports d'autres fichiers.
+ */
+export async function updateImportGraph(
+  root: string,
+  snapshot: RepositorySnapshot,
+  changes: readonly ObservedChange[],
+): Promise<ImportGraph | null> {
+  const relevant = changes.filter((change) =>
+    SOURCE_EXTENSION.test(change.path) || /(^|\/)tsconfig(?:\.[^/]*)?\.json$/i.test(change.path),
+  );
+  if (relevant.length === 0) return readImportGraphSync(root);
+  const existing = readImportGraphSync(root);
+  const topologyChanged = !existing || relevant.some((change) =>
+    change.kind !== "modified" || /(^|\/)tsconfig(?:\.[^/]*)?\.json$/i.test(change.path),
+  );
+  if (topologyChanged) return await buildImportGraph(root, snapshot);
+
+  const nodeSet = new Set(existing.nodes);
+  const configs = await aliases(root, snapshot);
+  const edges = { ...existing.edges };
+  const unresolvedImports = { ...existing.unresolvedImports };
+  for (const change of relevant) {
+    const result = await importsForFile(root, change.path, nodeSet, configs);
+    edges[change.path] = result.edges;
+    if (result.unresolved.length > 0) unresolvedImports[change.path] = result.unresolved;
+    else delete unresolvedImports[change.path];
+  }
+  const graph: ImportGraph = {
+    ...existing,
+    generatedAt: new Date().toISOString(),
+    edges,
+    unresolvedImports,
+  };
+  await writeImportGraph(root, graph);
   return graph;
 }

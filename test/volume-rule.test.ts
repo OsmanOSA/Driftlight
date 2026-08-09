@@ -19,7 +19,7 @@ function additions(paths: string[], current: RepositorySnapshot): ObservedChange
   return paths.map((filePath) => ({ path: filePath, kind: "created", after: current.files[filePath] }));
 }
 
-test("file-volume classification emits only once at the first threshold crossing", async (context) => {
+test("file volume is observation-only and never creates an effective alert", async (context) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "driftlight-volume-"));
   context.after(async () => await fs.rm(root, { recursive: true, force: true }));
   await writeCurrentIntent(root, "Refactor ordinary source files", { turnId: "turn-volume" });
@@ -59,7 +59,9 @@ test("file-volume classification emits only once at the first threshold crossing
   processChanges(session, additions([tenthPath], tenthSnapshot), tenthSnapshot);
 
   const volumeEvents = session.events.filter((event) => event.level !== "GREEN");
-  assert.equal(volumeEvents.length, 1);
-  assert.equal(volumeEvents[0]?.ruleId, "cumulative-score");
-  assert.ok((volumeEvents[0]?.scoreBreakdown.signals.find((signal) => signal.id === "turnFileCount")?.contribution ?? 0) > 0);
+  assert.equal(volumeEvents.length, 0);
+  assert.equal(
+    session.events.some((event) => event.shadowScore?.signals.some((signal) => signal.id === "turnFileCount")),
+    false,
+  );
 });

@@ -75,21 +75,66 @@ function rawValueText(value: SessionEvent["scoreBreakdown"]["signals"][number]["
   return typeof value === "object" && value !== null ? JSON.stringify(value) : String(value);
 }
 
+const STAGE_LABEL: Record<string, string> = {
+  absolute: "étage 0 · règle absolue",
+  exempt: "étage 1 · exemption",
+  behavior: "étage 2 · signaux de comportement",
+  shadow: "étage 3 · shadowScore promu",
+};
+
+function formatShadowScore(breakdown: SessionEvent["shadowScore"], promoted = false): string[] {
+  if (!breakdown) return [];
+  const lines = [
+    "",
+    "── Étage 3 · observation seulement ─────────────────────────",
+    promoted
+      ? "Ces signaux ont été promus par shadowSignalsCanAlert."
+      : "Ces signaux n'ont pas pesé sur le verdict ci-dessus.",
+  ];
+  if (breakdown.mode !== "scored") {
+    lines.push("Score structurel non calculé pour cet événement.");
+    return lines;
+  }
+  lines.push(breakdown.score === null
+    ? "shadowScore indisponible : aucun signal restant à renormaliser."
+    : `Aurait dit : ${breakdown.verdict} · score ${breakdown.score}/${breakdown.thresholds.red} pour le rouge`);
+  for (const signal of breakdown.signals) {
+    lines.push(signal.available
+      ? `- ${signal.id} · brut ${rawValueText(signal.rawValue)} · poids ${signal.weight} · contribution ${signal.contribution}`
+      : `- ${signal.id} · INDISPONIBLE · retiré du calcul · ${signal.explanation}`);
+  }
+  if (breakdown.unavailableSignals.length > 0) {
+    lines.push(`Renormalisation ×${breakdown.normalizationFactor} sur les signaux restants.`);
+  }
+  return lines;
+}
+
 export function formatScoreExplanation(event: SessionEvent): string {
   const breakdown = event.scoreBreakdown;
   const subject = event.path ?? event.detail ?? "action";
   const lines = [
     `DriftLight explain · ${event.id}`,
     `${event.level} · ${subject} · ${event.ruleId}`,
+    ...(event.stage ? [`Décidé par : ${STAGE_LABEL[event.stage] ?? event.stage}`] : []),
+    ...(event.exemptedBy ? [`Exempté par : ${event.exemptedBy}`] : []),
   ];
   if (!breakdown) {
     lines.push("Décomposition indisponible pour cet ancien événement.");
-    return lines.join("\n");
+    return [...lines, ...formatShadowScore(event.shadowScore, event.stage === "shadow")].join("\n");
   }
   if (breakdown.mode === "absolute") {
-    lines.push(`Règle absolue hors score : ${breakdown.absoluteRuleId ?? event.ruleId}`);
-    lines.push(event.reasons[0] ?? "Règle prioritaire déclenchée.");
-    return lines.join("\n");
+    lines.push(`Verdict hors score : ${breakdown.absoluteRuleId ?? event.ruleId}`);
+    for (const reason of event.reasons) lines.push(reason);
+    return [...lines, ...formatShadowScore(event.shadowScore, event.stage === "shadow")].join("\n");
+  }
+  if (breakdown.mode === "rules") {
+    lines.push(`Verdict effectif par table de règles : ${breakdown.verdict}`);
+    for (const signal of breakdown.signals) {
+      lines.push(!signal.available
+        ? `- ${signal.id} · INDISPONIBLE · poids ${signal.weight} · contribution 0 · ${signal.explanation}`
+        : `- ${signal.id} · brut ${rawValueText(signal.rawValue)} · sévérité ${signal.severity ?? "GREEN"} · poids ${signal.weight} · contribution ${signal.contribution} · ${signal.triggered ? "DÉCLENCHÉ" : "non déclenché"}`);
+    }
+    return [...lines, ...formatShadowScore(event.shadowScore, event.stage === "shadow")].join("\n");
   }
   lines.push(
     `Score : ${breakdown.score} (avant bornage ${breakdown.unclampedScore}) · seuils orange ${breakdown.thresholds.orange}, rouge ${breakdown.thresholds.red}`,
@@ -105,5 +150,5 @@ export function formatScoreExplanation(event: SessionEvent): string {
   if (breakdown.unavailableSignals.length > 0) {
     lines.push(`Indisponibles : ${breakdown.unavailableSignals.join(", ")}`);
   }
-  return lines.join("\n");
+  return [...lines, ...formatShadowScore(event.shadowScore, event.stage === "shadow")].join("\n");
 }

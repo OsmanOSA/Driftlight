@@ -1,22 +1,30 @@
 import path from "node:path";
-import { DeterministicClassifier } from "../classification/deterministic-classifier.js";
+import { promises as fs } from "node:fs";
 import { changeFromAbsolutePath, classifyCommand } from "../classification/rules.js";
 import type { ClaudeHookInput, SessionEvent, SessionRecord } from "../domain/types.js";
 import { loadConfigSync } from "../config/config.js";
 import { captureGitBaseline } from "../git/baseline.js";
 import { readCurrentIntentSync, writeCurrentIntent } from "../intent/current-intent.js";
+import {
+  extractDeclaredPlanPaths,
+  extractReadPaths,
+  isPlanTool,
+  isReadLikeTool,
+} from "../intent/agent-context.js";
 import { diffSnapshots, scanRepository } from "../observer/snapshot.js";
+import { updateImportGraph } from "../profile/import-graph.js";
 import { dispatchNotifications } from "../notify/dispatcher.js";
 import { suppressedByCap } from "../notify/notified-log.js";
-import { isInsideRoot, safeIdentifier } from "../shared/paths.js";
+import { safeIdentifier } from "../shared/paths.js";
 import {
   appendSessionEvents,
+  classifyProposedFileChange,
   createSession,
   eventFromFindings,
   processChanges,
   recordAgentRead,
+  recordDeclaredPlanPaths,
   setCurrentIntent,
-  turnTouchedPathCount,
 } from "../session/service.js";
 import { SessionStore } from "../session/store.js";
 import { recordCurrentStatus } from "../status/current-status.js";
@@ -51,48 +59,6 @@ async function sessionContext(input: ClaudeHookInput): Promise<{
   const id = `claude-${safeIdentifier(input.session_id)}`;
   const store = new SessionStore(root);
   return { store, session: await store.load(id), id, root };
-}
-
-function classificationEvent(
-  session: SessionRecord,
-  filePath: string,
-  kind: "created" | "modified",
-  operation: "edit" | "write",
-  deletedLineCount = 0,
-): SessionEvent | null {
-  if (!isInsideRoot(session.cwd, filePath)) return null;
-  const change = changeFromAbsolutePath(session.cwd, filePath, kind);
-  if (!change) return null;
-  change.before = session.lastSnapshot.files[change.path];
-  const classifier = new DeterministicClassifier();
-  const currentIntent = readCurrentIntentSync(session.cwd);
-  const classification = classifier.classify({
-    root: session.cwd,
-    change,
-    baseline: session.baseline,
-    initialSnapshot: session.initialSnapshot,
-    currentSnapshot: session.lastSnapshot,
-    changedFileCount: turnTouchedPathCount(session, currentIntent?.turnId, [change]),
-    deletedFileCount: session.events.filter((event) => event.changeKind === "deleted").length,
-    agentReads: session.agentReads ?? [],
-    emittedRuleIds: session.events.flatMap((event) => event.codes),
-    operation: { kind: operation, deletedLineCount },
-  });
-  return {
-    id: `event-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`,
-    timestamp: new Date().toISOString(),
-    type: "proposed-action",
-    path: change.path,
-    changeKind: change.kind,
-    level: classification.level,
-    reasons: classification.reasons,
-    codes: classification.codes,
-    ruleId: classification.ruleId,
-    scoreBreakdown: classification.scoreBreakdown,
-    expected: false,
-    ...(classification.intentVersion ? { intentVersion: classification.intentVersion } : {}),
-    ...(classification.turnId ? { turnId: classification.turnId } : {}),
-  };
 }
 
 function absoluteToolPath(root: string, filePath: string): string {
@@ -132,6 +98,36 @@ function titleOutput(root: string): ClaudeHookOutput | undefined {
 function textLineCount(value: string): number {
   if (value.length === 0) return 0;
   return value.split(/\r?\n/).length - (value.endsWith("\n") ? 1 : 0);
+}
+
+async function proposedOperationContext(
+  toolName: string,
+  absolutePath: string,
+  toolInput: Record<string, unknown>,
+): Promise<{ content?: string; fullFileReformat?: boolean }> {
+  if (toolName === "Write" && typeof toolInput.content === "string") {
+    try {
+      const current = await fs.readFile(absolutePath, "utf8");
+      const compact = (value: string): string => value.replace(/\s+/g, "");
+      return {
+        content: toolInput.content,
+        fullFileReformat: current !== toolInput.content && compact(current) === compact(toolInput.content),
+      };
+    } catch {
+      return { content: toolInput.content };
+    }
+  }
+  if (toolName !== "Edit" || typeof toolInput.old_string !== "string" || typeof toolInput.new_string !== "string") {
+    return {};
+  }
+  try {
+    const current = await fs.readFile(absolutePath, "utf8");
+    return current.includes(toolInput.old_string)
+      ? { content: current.replace(toolInput.old_string, toolInput.new_string), fullFileReformat: false }
+      : { fullFileReformat: false };
+  } catch {
+    return { fullFileReformat: false };
+  }
 }
 
 async function ensureSession(input: ClaudeHookInput): Promise<{ store: SessionStore; session: SessionRecord }> {
@@ -181,6 +177,16 @@ export async function handleClaudeHook(input: ClaudeHookInput): Promise<ClaudeHo
 
   if (input.hook_event_name === "PreToolUse") {
     const events: SessionEvent[] = [];
+    if (input.tool_name && isPlanTool(input.tool_name)) {
+      const intent = readCurrentIntentSync(session.cwd);
+      if (intent) {
+        recordDeclaredPlanPaths(
+          session,
+          intent.turnId,
+          extractDeclaredPlanPaths(session.cwd, input.tool_input),
+        );
+      }
+    }
     const command = input.tool_input?.command;
     if ((input.tool_name === "Bash" || input.tool_name === "PowerShell") && typeof command === "string") {
       const findings = classifyCommand(command, session.baseline);
@@ -211,7 +217,16 @@ export async function handleClaudeHook(input: ClaudeHookInput): Promise<ClaudeHo
           ? Math.max(0, textLineCount(oldText) - textLineCount(newText))
           : 0;
       const operation = input.tool_name === "Write" ? "write" : "edit";
-      const event = classificationEvent(session, absolutePath, kind, operation, deletedLineCount);
+      const proposed = await proposedOperationContext(input.tool_name ?? "", absolutePath, input.tool_input ?? {});
+      const event = classifyProposedFileChange(
+        session,
+        absolutePath,
+        kind,
+        operation,
+        deletedLineCount,
+        proposed.content,
+        proposed.fullFileReformat,
+      );
       if (event) events.push(event);
     }
 
@@ -245,17 +260,23 @@ export async function handleClaudeHook(input: ClaudeHookInput): Promise<ClaudeHo
   }
 
   if (input.hook_event_name === "PostToolUse" || input.hook_event_name === "FileChanged") {
-    const readPath = input.tool_input?.file_path;
-    if (input.hook_event_name === "PostToolUse" && input.tool_name === "Read" && typeof readPath === "string") {
-      const absolutePath = absoluteToolPath(session.cwd, readPath);
-      const relative = changeFromAbsolutePath(session.cwd, absolutePath, "modified")?.path;
+    if (input.hook_event_name === "PostToolUse" && input.tool_name && isReadLikeTool(input.tool_name)) {
       const intent = readCurrentIntentSync(session.cwd);
-      if (relative && intent) recordAgentRead(session, relative, intent.turnId);
+      const paths = extractReadPaths(
+        session.cwd,
+        input.tool_input,
+        input.tool_response,
+        Object.keys(session.lastSnapshot.files),
+      );
+      if (intent) {
+        for (const filePath of paths) recordAgentRead(session, filePath, intent.turnId);
+      }
       await store.save(session);
       return undefined;
     }
     const current = await scanRepository(session.cwd);
     const changes = diffSnapshots(session.lastSnapshot, current);
+    await updateImportGraph(session.cwd, current, changes).catch(() => null);
     const events = processChanges(session, changes, current);
     await store.save(session);
     // PostToolUse observe le disque après coup : rien n'a été bloqué ici.

@@ -18,6 +18,7 @@ import {
   SILENCE_WINDOW_MS,
   suppressedByCap,
 } from "../src/notify/notified-log.js";
+import { WINDOWS_TOAST_STARTUP_MS, windowsToastArguments } from "../src/notify/windows-toast.js";
 import { formatStopSummary } from "../src/ui/terminal.js";
 
 const SESSION = "claude-session-1";
@@ -90,6 +91,7 @@ const config = (overrides: Partial<DriftLightConfig> = {}): DriftLightConfig => 
 test("the notification title states what actually happened, not the severity", () => {
   const blocked = buildNotification(event("e1", "RED"), config(), true);
   assert.equal(blocked.title, "DriftLight — action bloquée");
+  assert.doesNotMatch(blocked.message, /DriftLight (approve|reject)/);
 
   const observed = buildNotification(event("e1", "RED"), config(), false);
   assert.equal(
@@ -97,6 +99,7 @@ test("the notification title states what actually happened, not the severity", (
     "DriftLight — modification détectée",
     "claiming the action was blocked while the agent keeps working would be a lie",
   );
+  assert.doesNotMatch(observed.message, /DriftLight approve/);
 
   for (const notification of [blocked, observed]) {
     assert.match(notification.message, /src\/secret\.ts/);
@@ -262,6 +265,97 @@ test("a new session resets the cap and its silent counter", async (context) => {
   assert.equal(suppressedByCap(root, "session-a"), 0, "the counter belongs to the current session only");
 });
 
+// --- Un blocage n'est jamais tu -------------------------------------------
+
+test("a blocked action notifies again every time the agent proposes it anew", async (context) => {
+  const root = await temporaryRoot(context);
+  const notifier = fakeNotifier();
+
+  // Scénario réel : l'agent propose une suppression, l'utilisateur ne valide pas,
+  // l'agent la repropose quelques tours plus tard. À chaque fois il reste arrêté,
+  // en attente — donc à chaque fois l'utilisateur doit être prévenu.
+  for (const attempt of ["first", "second", "third"]) {
+    const proposal = event(`event-block-${attempt}`, "RED", { path: "src/important.ts" });
+    const outcome = await dispatchNotifications(root, [proposal], config(), SESSION, {
+      loadBackend: notifier.loader,
+      blockedEventIds: [proposal.id],
+      environment: NEUTRAL_ENV,
+    });
+    assert.deepEqual(
+      outcome.map((item) => item.outcome),
+      ["sent"],
+      `attempt ${attempt}: a silenced block leaves the user unaware the agent is waiting`,
+    );
+  }
+
+  assert.equal(notifier.sent.length, 3, "same path, same rule, three blocks, three notifications");
+  assert.equal(
+    notifier.sent.every((notification) => notification.title === "DriftLight — action bloquée"),
+    true,
+  );
+});
+
+test("a blocked action is not silenced by the session cap either", async (context) => {
+  const root = await temporaryRoot(context);
+  const notifier = fakeNotifier();
+
+  // Le plafond est saturé par des événements ordinaires...
+  const filler = Array.from({ length: SESSION_NOTIFICATION_CAP }, (_, index) =>
+    event(`event-filler-${index}`, "RED", { path: `src/filler-${index}.ts` }));
+  await dispatchNotifications(root, filler, config(), SESSION, {
+    loadBackend: notifier.loader,
+    environment: NEUTRAL_ENV,
+  });
+  assert.equal(notifier.sent.length, SESSION_NOTIFICATION_CAP);
+
+  // ...mais l'agent qui attend une décision passe quand même.
+  const blocked = event("event-blocked-past-cap", "RED", { path: "src/critical.ts" });
+  const outcome = await dispatchNotifications(root, [blocked], config(), SESSION, {
+    loadBackend: notifier.loader,
+    blockedEventIds: [blocked.id],
+    environment: NEUTRAL_ENV,
+  });
+
+  assert.deepEqual(outcome.map((item) => item.outcome), ["sent"]);
+  assert.equal(suppressedByCap(root, SESSION), 0, "a block is never counted as silenced");
+});
+
+test("the same eventId still notifies only once, even when blocking", async (context) => {
+  const root = await temporaryRoot(context);
+  const notifier = fakeNotifier();
+  const proposal = event("event-block-idempotent", "RED");
+
+  // Rejouer le *même* événement — un hook relancé — reste une seule demande.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await dispatchNotifications(root, [proposal], config(), SESSION, {
+      loadBackend: notifier.loader,
+      blockedEventIds: [proposal.id],
+      environment: NEUTRAL_ENV,
+    });
+  }
+  assert.equal(notifier.sent.length, 1);
+});
+
+test("anti-noise still applies to merely recorded events", async (context) => {
+  const root = await temporaryRoot(context);
+  const notifier = fakeNotifier();
+
+  // Sans blocage, rien n'attend l'utilisateur : la répétition redevient du bruit.
+  const first = event("event-observed-1", "RED", { path: "src/same.ts" });
+  const second = event("event-observed-2", "RED", { path: "src/same.ts" });
+  await dispatchNotifications(root, [first], config(), SESSION, {
+    loadBackend: notifier.loader,
+    environment: NEUTRAL_ENV,
+  });
+  const repeat = await dispatchNotifications(root, [second], config(), SESSION, {
+    loadBackend: notifier.loader,
+    environment: NEUTRAL_ENV,
+  });
+
+  assert.deepEqual(repeat.map((item) => item.outcome), ["duplicate-recent"]);
+  assert.equal(notifier.sent.length, 1);
+});
+
 test("the Stop summary surfaces the silenced count, and stays quiet when nothing was capped", () => {
   const alerts = [event("e-stop", "RED", { turnId: "turn-1" })];
 
@@ -276,6 +370,23 @@ test("the Stop summary surfaces the silenced count, and stays quiet when nothing
 });
 
 // --- Sélection par niveau -----------------------------------------------------
+
+test("Windows toast uses argument arrays and a bounded startup window", () => {
+  const notification: NativeNotification = {
+    title: "DriftLight — action bloquée",
+    message: "C:\\Work Folder\\.env\ndestructive-git-command",
+    sound: true,
+  };
+  assert.deepEqual(windowsToastArguments(notification), [
+    "-t",
+    notification.title,
+    "-m",
+    notification.message,
+    "-s",
+    "Notification.Default",
+  ]);
+  assert.ok(WINDOWS_TOAST_STARTUP_MS < 1_000);
+});
 
 test("orange does not notify under the default configuration", async (context) => {
   const root = await temporaryRoot(context);

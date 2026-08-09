@@ -73,13 +73,14 @@ test("a red PreToolUse verdict forces user confirmation and records its ruleId",
   }));
 
   assert.equal(output?.hookSpecificOutput?.permissionDecision, "ask");
-  assert.match(output?.hookSpecificOutput?.permissionDecisionReason ?? "", /cumulative-score/);
+  assert.match(output?.hookSpecificOutput?.permissionDecisionReason ?? "", /sensitive-file/);
   assert.match(output?.hookSpecificOutput?.permissionDecisionReason ?? "", /\.env/);
   const session = await new SessionStore(root).load("claude-integration-hook");
   const event = session?.events.find((item) => item.path === ".env");
   assert.equal(event?.level, "RED");
-  assert.equal(event?.ruleId, "cumulative-score");
-  assert.equal(event?.scoreBreakdown.mode, "scored");
+  assert.equal(event?.ruleId, "sensitive-file");
+  assert.equal(event?.scoreBreakdown.mode, "rules");
+  assert.equal(event?.stage, "behavior");
   assert.equal(event?.turnId, "turn-red");
   assert.equal(readCurrentStatusSync(root).level, "RED");
 });
@@ -91,6 +92,10 @@ test("a red verdict with blockOnRed cannot let the agent proceed", async (contex
   await handleClaudeHook(hook(root, "UserPromptSubmit", {
     prompt: "Fix src/anchor.ts",
     prompt_id: "turn-contract",
+  }));
+  await handleClaudeHook(hook(root, "PostToolUse", {
+    tool_name: "Read",
+    tool_input: { file_path: path.join(root, "src", "unconnected.ts") },
   }));
 
   const output = await handleClaudeHook(hook(root, "PreToolUse", {
@@ -122,6 +127,10 @@ test("an orange verdict is recorded but does not interrupt by default", async (c
     prompt: "Fix src/anchor.ts",
     prompt_id: "turn-orange",
   }));
+  await handleClaudeHook(hook(root, "PostToolUse", {
+    tool_name: "Read",
+    tool_input: { file_path: path.join(root, "src", "unconnected.ts") },
+  }));
 
   const output = await handleClaudeHook(hook(root, "PreToolUse", {
     tool_name: "Write",
@@ -133,7 +142,7 @@ test("an orange verdict is recorded but does not interrupt by default", async (c
   const session = await new SessionStore(root).load("claude-integration-hook");
   const event = session?.events.find((item) => item.path === "src/unconnected.ts");
   assert.equal(event?.level, "ORANGE");
-  assert.equal(event?.ruleId, "cumulative-score");
+  assert.equal(event?.ruleId, "destructive-edit");
 });
 
 test("blocking behavior follows local blockOnRed and blockOnOrange settings", async (context) => {
@@ -153,12 +162,17 @@ test("blocking behavior follows local blockOnRed and blockOnOrange settings", as
   }));
   assertDoesNotBlock(red, "blockOnRed=false must disable only the confirmation prompt");
 
+  await handleClaudeHook(hook(root, "PostToolUse", {
+    tool_name: "Read",
+    tool_input: { file_path: path.join(root, "src", "unconnected.ts") },
+  }));
+
   const orange = await handleClaudeHook(hook(root, "PreToolUse", {
     tool_name: "Write",
     tool_input: { file_path: path.join(root, "src", "unconnected.ts"), content: "export const changed = 2;\n" },
   }));
   assert.equal(orange?.hookSpecificOutput?.permissionDecision, "ask");
-  assert.match(orange?.hookSpecificOutput?.permissionDecisionReason ?? "", /cumulative-score/);
+  assert.match(orange?.hookSpecificOutput?.permissionDecisionReason ?? "", /destructive-edit/);
 });
 
 test("an explicitly named file is never signaled, including a sensitive path", async (context) => {
@@ -177,8 +191,9 @@ test("an explicitly named file is never signaled, including a sensitive path", a
   const session = await new SessionStore(root).load("claude-integration-hook");
   const event = session?.events.find((item) => item.path === ".env");
   assert.equal(event?.level, "GREEN");
-  assert.equal(event?.ruleId, "cumulative-score");
-  assert.ok((event?.scoreBreakdown.score ?? 1) < (event?.scoreBreakdown.thresholds.orange ?? 0));
+  assert.equal(event?.ruleId, "named-in-intent");
+  assert.equal(event?.stage, "exempt");
+  assert.equal(event?.exemptedBy, "named-in-intent");
 });
 
 test("the classifier reloads current-intent.json between successive turns", async (context) => {
@@ -220,9 +235,21 @@ test("Stop summarizes only orange and red events from the current turn", async (
     prompt: "Fix src/anchor.ts",
     prompt_id: "turn-summary",
   }));
+  await handleClaudeHook(hook(root, "PostToolUse", {
+    tool_name: "Read",
+    tool_input: { file_path: path.join(root, "src", "direct.ts") },
+  }));
   await handleClaudeHook(hook(root, "PreToolUse", {
-    tool_name: "Write",
-    tool_input: { file_path: path.join(root, "src", "direct.ts"), content: "export const direct = 2;\n" },
+    tool_name: "Edit",
+    tool_input: {
+      file_path: path.join(root, "src", "direct.ts"),
+      old_string: "export const direct = 1;",
+      new_string: "export const direct = 2;",
+    },
+  }));
+  await handleClaudeHook(hook(root, "PostToolUse", {
+    tool_name: "Read",
+    tool_input: { file_path: path.join(root, "src", "unconnected.ts") },
   }));
   await handleClaudeHook(hook(root, "PreToolUse", {
     tool_name: "Write",
@@ -234,8 +261,8 @@ test("Stop summarizes only orange and red events from the current turn", async (
   }));
 
   const output = await handleClaudeHook(hook(root, "Stop", { prompt_id: "turn-summary" }));
-  assert.match(output?.systemMessage ?? "", /ORANGE · src\/unconnected\.ts · cumulative-score · event-/);
-  assert.match(output?.systemMessage ?? "", /RED · \.env · cumulative-score · event-/);
+  assert.match(output?.systemMessage ?? "", /ORANGE · src\/unconnected\.ts · destructive-edit · event-/);
+  assert.match(output?.systemMessage ?? "", /RED · \.env · sensitive-file · event-/);
   assert.doesNotMatch(output?.systemMessage ?? "", /src\/direct\.ts|GREEN|\.env\.previous/);
 });
 
@@ -300,6 +327,53 @@ test("editing a pre-existing file after reading it in the turn emits no alert", 
   assert.equal(session?.events.filter((event) => event.path === "protected.txt" && event.level !== "GREEN").length, 0);
 });
 
+test("grep and glob results are captured as reads for the current turn", async (context) => {
+  const root = await setup(context);
+  await handleClaudeHook(hook(root, "UserPromptSubmit", {
+    prompt: "Inspecte puis ajuste le code",
+    prompt_id: "turn-grep-read",
+  }));
+  await handleClaudeHook(hook(root, "PostToolUse", {
+    tool_name: "Grep",
+    tool_input: { pattern: "direct" },
+    tool_response: { content: "src/direct.ts:1:export const direct = 1" },
+  }));
+  const output = await handleClaudeHook(hook(root, "PreToolUse", {
+    tool_name: "Edit",
+    tool_input: {
+      file_path: path.join(root, "src", "direct.ts"),
+      old_string: "direct = 1",
+      new_string: "direct = 2",
+    },
+  }));
+  assertDoesNotBlock(output);
+  const session = await new SessionStore(root).load("claude-integration-hook");
+  assert.ok(session?.agentReads?.some((read) => read.path === "src/direct.ts" && read.turnId === "turn-grep-read"));
+  assert.equal(session?.events.find((event) => event.path === "src/direct.ts")?.exemptedBy, "read-this-turn");
+});
+
+test("a path declared in the agent plan is exempted and traced", async (context) => {
+  const root = await setup(context);
+  await handleClaudeHook(hook(root, "UserPromptSubmit", {
+    prompt: "Prépare la modification demandée",
+    prompt_id: "turn-plan",
+  }));
+  await handleClaudeHook(hook(root, "PreToolUse", {
+    tool_name: "TodoWrite",
+    tool_input: { todos: [{ content: "Réécrire src/unconnected.ts" }] },
+  }));
+  const output = await handleClaudeHook(hook(root, "PreToolUse", {
+    tool_name: "Write",
+    tool_input: { file_path: path.join(root, "src", "unconnected.ts"), content: "export const planned = true;\n" },
+  }));
+  assertDoesNotBlock(output);
+  const session = await new SessionStore(root).load("claude-integration-hook");
+  const event = session?.events.find((item) => item.path === "src/unconnected.ts");
+  assert.equal(event?.level, "GREEN");
+  assert.equal(event?.exemptedBy, "declared-in-plan");
+  assert.deepEqual(session?.declaredPlanPathsByTurn?.["turn-plan"], ["src/unconnected.ts"]);
+});
+
 test("deleting an out-of-scope pre-existing file emits one red recovery alert", async (context) => {
   const root = await setupPreexistingWork(context);
   await handleClaudeHook(hook(root, "UserPromptSubmit", {
@@ -320,21 +394,23 @@ test("deleting an out-of-scope pre-existing file emits one red recovery alert", 
   assert.match(alerts[0]?.reasons[0] ?? "", /Annuler|historique local/i);
 });
 
-test("rewriting an unread out-of-scope pre-existing file emits orange", async (context) => {
+test("rewriting an unread out-of-scope pre-existing file is absolute red", async (context) => {
   const root = await setupPreexistingWork(context);
   await handleClaudeHook(hook(root, "UserPromptSubmit", {
     prompt: "Fix README.md",
     prompt_id: "turn-write-preexisting",
   }));
 
-  assertDoesNotBlock(await handleClaudeHook(hook(root, "PreToolUse", {
+  const output = await handleClaudeHook(hook(root, "PreToolUse", {
     tool_name: "Write",
     tool_input: { file_path: path.join(root, "protected.txt"), content: "replacement\n" },
-  })));
+  }));
+  assert.equal(output?.hookSpecificOutput?.permissionDecision, "ask");
 
   const session = await new SessionStore(root).load("claude-integration-hook");
-  const alert = session?.events.find((event) => event.path === "protected.txt" && event.ruleId === "preexisting-destructive-edit");
-  assert.equal(alert?.level, "ORANGE");
+  const alert = session?.events.find((event) => event.path === "protected.txt" && event.ruleId === "preexisting-file-rewritten");
+  assert.equal(alert?.level, "RED");
+  assert.equal(alert?.stage, "absolute");
 });
 
 test("the pre-existing protection rule emits at most once per file and turn", async (context) => {
@@ -346,18 +422,17 @@ test("the pre-existing protection rule emits at most once per file and turn", as
 
   for (let index = 0; index < 3; index += 1) {
     await handleClaudeHook(hook(root, "PreToolUse", {
-      tool_name: "Edit",
+      tool_name: "Write",
       tool_input: {
         file_path: path.join(root, "protected.txt"),
-        old_string: `old ${index}`,
-        new_string: `new ${index}`,
+        content: `replacement ${index}\n`,
       },
     }));
   }
 
   const session = await new SessionStore(root).load("claude-integration-hook");
   const alerts = session?.events.filter(
-    (event) => event.path === "protected.txt" && event.ruleId === "preexisting-destructive-edit",
+    (event) => event.path === "protected.txt" && event.ruleId === "preexisting-file-rewritten",
   ) ?? [];
   assert.equal(alerts.length, 1);
 });

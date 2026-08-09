@@ -1,3 +1,5 @@
+import { showWindowsToast } from "./windows-toast.js";
+
 /**
  * Processus détaché qui affiche une notification native, puis s'éteint.
  *
@@ -16,7 +18,7 @@ interface NotifierLike {
 }
 
 /** Filet de sécurité : ce processus ne doit jamais devenir orphelin permanent. */
-const MAX_LIFETIME_MS = 60_000;
+const MAX_LIFETIME_MS = 2_000;
 
 function isNotifierLike(value: unknown): value is NotifierLike {
   return typeof value === "object"
@@ -29,6 +31,16 @@ async function main(): Promise<void> {
   if (!raw) return;
 
   const payload = JSON.parse(raw) as { title?: string; message?: string; sound?: boolean };
+  const notification = {
+    title: payload.title ?? "DriftLight",
+    message: payload.message ?? "",
+    sound: payload.sound ?? true,
+  };
+  if (process.platform === "win32") {
+    await showWindowsToast(notification);
+    return;
+  }
+
   const imported: unknown = await import("node-notifier");
   const notifier = isNotifierLike(imported) ? imported : (imported as { default?: unknown }).default;
   if (!isNotifierLike(notifier)) return;
@@ -37,9 +49,7 @@ async function main(): Promise<void> {
 
   notifier.notify(
     {
-      title: payload.title ?? "DriftLight",
-      message: payload.message ?? "",
-      sound: payload.sound ?? true,
+      ...notification,
       wait: false,
     },
     () => {

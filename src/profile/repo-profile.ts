@@ -1,13 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { RepoProfile, RepositorySnapshot, ScoringConfig } from "../domain/types.js";
 import { toPosixPath } from "../shared/paths.js";
-
-const MODIFICATION_RATE_MINIMUM_COMMITS = 50;
-const COOCCURRENCE_MINIMUM_COMMITS = 100;
 
 function gitText(root: string, args: string[], maxBuffer = 100 * 1024 * 1024): string | null {
   try {
@@ -53,7 +52,7 @@ function gitignoreRegex(pattern: string): RegExp | null {
   return new RegExp(`${prefix}${escaped}${directory ? "(?:/.*)?" : "(?:$|/)"}`);
 }
 
-function matchingGitignorePattern(filePath: string, patterns: string[]): string | null {
+export function matchingGitignorePattern(filePath: string, patterns: string[]): string | null {
   let matched: string | null = null;
   for (const pattern of patterns) {
     const regex = gitignoreRegex(pattern);
@@ -78,7 +77,7 @@ export function sensitivitySourcesForPath(profile: RepoProfile, filePath: string
   return sources;
 }
 
-function readGitignorePatterns(root: string): string[] {
+export function readGitignorePatterns(root: string): string[] {
   try {
     return readFileSync(path.join(root, ".gitignore"), "utf8")
       .split(/\r?\n/)
@@ -107,9 +106,22 @@ export async function buildRepoProfile(
   snapshot: RepositorySnapshot,
   config: ScoringConfig,
 ): Promise<RepoProfile> {
+  const sourceCommit = gitText(root, ["rev-parse", "HEAD"]);
+  const configVersion = `${config.version}:${createHash("sha256")
+    .update(JSON.stringify({
+      secretPathPatterns: config.secretPathPatterns,
+      minimumModificationCommits: config.signalParameters.minimumModificationCommits,
+      minimumCooccurrenceCommits: config.signalParameters.minimumCooccurrenceCommits,
+    }))
+    .digest("hex")
+    .slice(0, 12)}`;
+  const cached = readRepoProfileSync(root);
+  if (cached?.sourceCommit === sourceCommit && cached.configVersion === configVersion) return cached;
   const commitCount = Number(gitText(root, ["rev-list", "--count", "HEAD"]) ?? "0") || 0;
-  const enoughForRates = commitCount >= MODIFICATION_RATE_MINIMUM_COMMITS;
-  const enoughForCooccurrence = commitCount >= COOCCURRENCE_MINIMUM_COMMITS;
+  const rateMinimum = config.signalParameters.minimumModificationCommits;
+  const cooccurrenceMinimum = config.signalParameters.minimumCooccurrenceCommits;
+  const enoughForRates = commitCount >= rateMinimum;
+  const enoughForCooccurrence = commitCount >= cooccurrenceMinimum;
   const commits = enoughForRates
     ? parseCommitFiles(gitText(root, ["log", "--format=%x1e", "--name-only", "--no-renames"]) ?? "")
     : [];
@@ -148,19 +160,21 @@ export async function buildRepoProfile(
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
     root,
+    sourceCommit,
+    configVersion,
     commitCount,
     modificationRates: {
       available: enoughForRates,
-      minimumCommits: MODIFICATION_RATE_MINIMUM_COMMITS,
+      minimumCommits: rateMinimum,
       rates: enoughForRates ? rates : {},
       touchCounts: enoughForRates ? touchCounts : {},
-      ...(!enoughForRates ? { reason: `Historique insuffisant : ${commitCount}/${MODIFICATION_RATE_MINIMUM_COMMITS} commits.` } : {}),
+      ...(!enoughForRates ? { reason: `Historique insuffisant : ${commitCount}/${rateMinimum} commits.` } : {}),
     },
     cooccurrence: {
       available: enoughForCooccurrence,
-      minimumCommits: COOCCURRENCE_MINIMUM_COMMITS,
+      minimumCommits: cooccurrenceMinimum,
       frequencies: enoughForCooccurrence ? frequencies : {},
-      ...(!enoughForCooccurrence ? { reason: `Historique insuffisant : ${commitCount}/${COOCCURRENCE_MINIMUM_COMMITS} commits.` } : {}),
+      ...(!enoughForCooccurrence ? { reason: `Historique insuffisant : ${commitCount}/${cooccurrenceMinimum} commits.` } : {}),
     },
     sensitivity: {
       gitignorePatterns,
@@ -179,4 +193,20 @@ export async function buildRepoProfile(
   await fs.writeFile(temporary, `${JSON.stringify(profile, null, 2)}\n`, "utf8");
   await fs.rename(temporary, target);
   return profile;
+}
+
+/** Lance le calcul Git hors du chemin critique du hook SessionStart. */
+export function startRepoProfileBuild(root: string): void {
+  if (process.env.NODE_ENV === "test" || process.env.NODE_TEST_CONTEXT !== undefined) return;
+  try {
+    const worker = fileURLToPath(new URL("./profile-worker.js", import.meta.url));
+    const child = spawn(process.execPath, [worker, root], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    child.unref();
+  } catch {
+    // Le profil restera indisponible ; le classifieur se dégrade explicitement.
+  }
 }

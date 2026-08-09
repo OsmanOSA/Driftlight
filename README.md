@@ -10,7 +10,7 @@ DriftLight est un voyant local qui compare la demande donnée à un coding agent
 - aucune commande de rollback ou de nettoyage exécutée ;
 - détection des créations, modifications et suppressions ;
 - protection renforcée des changements présents avant la session ;
-- classifieur déterministe à score cumulé, toujours rendu en `GREEN | ORANGE | RED` ;
+- classifieur déterministe en étages stricts, toujours rendu en `GREEN | ORANGE | RED` ;
 - confirmation Claude Code sur rouge par défaut, sans exécution destructive automatique ;
 - notification système sur rouge, plafonnée et dédupliquée, jamais bloquante ;
 - titre du terminal reflétant le statut, restauré en fin de session ;
@@ -75,7 +75,7 @@ Les hooks joignent par ailleurs un champ `terminalSequence` à leur réponse pou
 
 Chaque `UserPromptSubmit` écrit atomiquement `.driftlight/current-intent.json`. Le classifieur relit directement ce fichier au moment de chaque décision, sans propagation entre processus. Un fichier explicitement nommé est donc exempté, y compris s'il est sensible.
 
-La protection du travail Git préexistant ne signale plus le simple fait de continuer un fichier déjà modifié. Elle exige simultanément une baseline non commitée, un fichier hors intention et non lu pendant le tour, ainsi qu'une opération destructive : suppression, `Write` complet, édition sans aucune lecture antérieure dans la session ou suppression nette importante de lignes. Une seule alerte est conservée par fichier et par tour.
+La protection absolue du travail Git préexistant ne signale pas une édition ordinaire. Elle exige simultanément une baseline non commitée, un fichier hors intention et une suppression ou réécriture intégrale. Le verdict est alors toujours ROUGE, même si le fichier a été lu ou cité dans le plan de l'agent. Une seule alerte absolue est conservée par fichier et par tour.
 
 La configuration locale facultative se trouve dans `.driftlight/config.json` :
 
@@ -87,7 +87,8 @@ La configuration locale facultative se trouve dans `.driftlight/config.json` :
   "notifyOnRed": true,
   "notifyOnOrange": false,
   "notificationSound": true,
-  "terminalTitle": true
+  "terminalTitle": true,
+  "shadowSignalsCanAlert": false
 }
 ```
 
@@ -100,8 +101,87 @@ La configuration locale facultative se trouve dans `.driftlight/config.json` :
 | `notifyOnOrange` | `false` | Notification système sur orange. |
 | `notificationSound` | `true` | Son accompagnant la notification. |
 | `terminalTitle` | `true` | Mise à jour du titre du terminal. |
+| `shadowSignalsCanAlert` | `false` | Conserve les signaux structurels en observation. À `true`, ils peuvent augmenter le verdict, jamais le diminuer. |
 
 **Aucun de ces réglages ne désactive la classification.** Ils ne touchent qu'à la restitution : un événement non notifié et non bloquant reste intégralement classé, journalisé et visible dans `status`, `explain` et le résumé `Stop`.
+
+## Intégration Codex globale
+
+L'adapter Codex transforme les hooks natifs Codex en protocole DriftLight versionné puis les remet au même pipeline Core que les autres agents : session, intention courante, classification, statut, historique et notifications natives. L'adapter ne classe pas, ne modifie pas les entrées d'outil et n'ouvre aucun port réseau. `.driftlight/inbox/codex/` conserve en plus les enveloppes normalisées minimales pour le diagnostic local.
+
+Après le build, connectez Codex une seule fois :
+
+```powershell
+node D:\Driftlight\dist\src\cli.js codex connect
+node D:\Driftlight\dist\src\cli.js codex status
+```
+
+Sur macOS, la même commande et le même package Node sont utilisés :
+
+```bash
+node /chemin/Driftlight/dist/src/cli.js codex connect
+```
+
+L'installateur écrit uniquement dans la configuration utilisateur officielle `${CODEX_HOME:-~/.codex}/`. Il fusionne les événements `SessionStart`, `SessionEnd`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `SubagentStart`, `SubagentStop` et `Stop` dans `hooks.json`, conserve les champs et hooks tiers, et utilise la commande Windows appropriée. Il configure aussi dans `config.toml` la politique native `approval_policy = "untrusted"` et `approvals_reviewer = "user"` : c'est Codex, et non DriftLight, qui présente alors son interface Autoriser / Refuser avant une commande non approuvée. Une seconde connexion ne crée aucun doublon et ne reprend jamais la main sur une valeur modifiée ensuite par l'utilisateur. À la désinstallation, DriftLight restaure uniquement les lignes qu'il avait lui-même changées, si elles sont encore intactes.
+
+Codex doit ensuite approuver la définition exacte du hook :
+
+> Open Codex → `/hooks` → review and trust the DriftLight hook once.
+
+DriftLight n'écrit et n'utilise jamais `--dangerously-bypass-hook-trust`, et n'écrit jamais dans l'état de confiance de Codex : cette approbation est un consentement utilisateur, la forger reviendrait à neutraliser le contrôle qu'elle constitue.
+
+### Diagnostic
+
+`codex status` lit l'état réel plutôt que de supposer une cause unique. Codex tient sa décision d'approbation dans `${CODEX_HOME:-~/.codex}/config.toml`, sous `[hooks.state.'<hooks.json>:<event>:<i>:<j>']`, avec une empreinte du contenu approuvé et, le cas échéant, `enabled = false`. DriftLight en extrait le détail par hook :
+
+```
+Codex · HOOKS_DISABLED
+Hooks :
+  ✓ SessionStart       approuvé et actif
+  ✗ PreToolUse         désactivé  ← bloque
+  ...
+Désactivé dans Codex : PreToolUse. Ouvrez Codex → /hooks et réactivez ce hook.
+```
+
+| État | Signification |
+| --- | --- |
+| `NOT_INSTALLED` | Aucun handler DriftLight dans `hooks.json`. |
+| `INSTALLED_NEEDS_APPROVAL` | Installé, mais Codex n'a enregistré aucun de ces hooks — ou les a approuvés sans qu'aucun événement ne soit encore arrivé. |
+| `HOOKS_DISABLED` | Au moins un hook porte `enabled = false`. Les hooks fautifs sont nommés. |
+| `TRUST_STALE` | `hooks.json` a été réécrit après l'enregistrement des empreintes : Codex les tiendra pour périmées. |
+| `DEGRADED` | Configuration partielle, Codex non détecté, ou hooks inconnus de Codex. |
+| `CONNECTED` | Hooks actifs et au moins un événement effectivement reçu. |
+
+Deux réserves d'honnêteté sur ce diagnostic. L'empreinte exacte de Codex n'est pas recalculable sans deviner sa forme canonique : la péremption est déduite de l'ordre des dates de modification, ce qui suffit à expliquer une approbation qui « ne tient pas », mais reste une heuristique. Et si `config.toml` est illisible, DriftLight ne conclut pas à un refus : un événement réellement reçu prouve que le hook s'exécute, et cette preuve directe prime sur l'absence d'information.
+
+Pour retirer seulement DriftLight :
+
+```powershell
+node D:\Driftlight\dist\src\cli.js codex disconnect
+```
+
+### Validation manuelle Codex
+
+1. Exécutez `npm.cmd run build` sous Windows ou `npm run build` sous macOS.
+2. Exécutez `node dist/src/cli.js codex connect`.
+3. Inspectez `%CODEX_HOME%\hooks.json` sous Windows, ou `${CODEX_HOME:-~/.codex}/hooks.json` sous macOS.
+4. Lancez une nouvelle session Codex.
+5. Ouvrez `/hooks`, contrôlez la commande DriftLight et approuvez-la.
+6. Soumettez `Create a file called scopelight-test.txt`.
+7. Vérifiez que `.driftlight/current-intent.json` contient le tour courant et qu'un fichier JSON `USER_PROMPT` apparaît dans `<workspace>/.driftlight/inbox/codex/`.
+8. Vérifiez les messages `TOOL_PROPOSED` puis `FILE_EDITED` lorsque Codex utilise `apply_patch`, ainsi que la session `codex-<session-id>.json` dans `.driftlight/sessions/`.
+9. Laissez le tour se terminer.
+10. Vérifiez la présence de `AGENT_STOPPED`.
+11. Ouvrez un autre repository et lancez une nouvelle session Codex.
+12. Vérifiez que sa propre boîte `.driftlight/inbox/codex/` reçoit les événements sans réinstallation.
+
+Le bridge remet au Core le prompt courant et les commandes proposées parce qu'ils sont nécessaires à la classification, après masquage des formats de secrets évidents. `PreToolUse/apply_patch` est classifié avant l'action ; `PostToolUse` déclenche ensuite la réconciliation réelle du filesystem. Le bridge ne persiste ni transcript, ni message assistant complet, ni output d'outil complet. Un payload invalide, un Core indisponible ou une erreur d'écriture conduit toujours à une sortie réussie du hook afin que Codex continue normalement.
+
+### Autoriser ou refuser dans Codex
+
+DriftLight ne crée aucun bouton et ne demande plus de saisir un `eventId`. Les hooks restent en observation et ne renvoient ni `deny` ni `ask`. La documentation Codex précise qu'un hook `PreToolUse` ne peut pas déclencher lui-même le dialogue natif avec `permissionDecision: "ask"` ; cette valeur n'est pas prise en charge. L'interface native est donc déclenchée par la politique d'approbation de Codex configurée lors de `codex connect`. Les commandes classées non fiables par Codex présentent directement ses choix natifs dans l'espace de travail.
+
+Cette séparation a une limite volontaire : DriftLight peut détecter et notifier un rouge que la politique native de Codex ne considère pas comme une commande à approuver. Dans ce cas, DriftLight ne fabrique pas un faux dialogue et reste fail-open. Les futurs mécanismes officiellement documentés pourront être branchés sans réintroduire un protocole textuel propriétaire.
 
 ## Notifications natives
 
@@ -111,10 +191,10 @@ Le titre décrit l'issue réelle du hook, pas la sévérité seule :
 
 | Issue | Titre |
 | --- | --- |
-| Le hook a effectivement renvoyé un refus (`permissionDecision` retenant l'action) | `DriftLight — action bloquée` |
+| Claude Code a effectivement retenu l'action | `DriftLight — action bloquée` |
 | L'événement est enregistré, l'agent poursuit | `DriftLight — modification détectée` |
 
-Un verdict rouge ne bloque que si `blockOnRed` est actif. Annoncer « action bloquée » pendant que l'agent continue de travailler serait un faux voyant, c'est-à-dire exactement ce que DriftLight prétend éviter.
+Sous Claude Code, `blockOnRed` pilote le dialogue de confirmation existant. Sous Codex, DriftLight observe et notifie ; Codex décide seul d'afficher Autoriser / Refuser selon sa politique native. Les identifiants d'événements restent utiles à l'historique et à `explain`, jamais comme commande d'approbation.
 
 ### Anti-bruit
 
@@ -156,31 +236,33 @@ Le fichier `.driftlight/current-status.json` contient le niveau maximal depuis l
 
 ## Profil du dépôt et graphe d'import
 
-Au démarrage d'une session, DriftLight construit une seule fois :
+Au démarrage d'une session, DriftLight prépare :
 
-- `.driftlight/repo-profile.json` : nombre de commits, taux de modification, cooccurrences et sensibilité dérivée ;
+- `.driftlight/repo-profile.json` : nombre de commits, taux de modification et cooccurrences, calculés par un worker en arrière-plan et mis en cache par HEAD ;
 - `.driftlight/import-graph.json` : imports statiques et dynamiques JavaScript/TypeScript, avec résolution relative et alias `tsconfig.paths`.
 
-Le taux de modification est indisponible sous 50 commits. La cooccurrence est indisponible sous 100 commits. Ces signaux restent explicitement marqués indisponibles : aucune valeur synthétique ne les remplace. Le score renormalise les poids restants.
+Le graphe invalide seulement les arêtes des sources modifiées ; une création, suppression ou modification de `tsconfig` reconstruit sa topologie. Il reste indisponible sous 20 fichiers JS/TS. Le taux de modification est indisponible sous 50 commits et la cooccurrence sous 100 commits. Ces seuils sont configurés dans `driftlight.scoring.json`.
 
-La sensibilité provient des motifs du `.gitignore` du projet et des expressions de secrets déclarées dans la configuration de score. Le code TypeScript ne contient plus de liste de chemins sensibles.
+Un signal indisponible est retiré et les poids restants sont renormalisés. Si aucun signal ne reste, le score vaut `null` : aucune valeur synthétique ne le remplace. Les motifs de secrets sont déclarés dans la configuration de score ; le code TypeScript ne contient aucune liste de chemins sensibles.
 
-## Score cumulé
+## Classification en étages
 
-Les poids, les seuils et les courbes de normalisation sont dans le fichier versionné `driftlight.scoring.json`. Un projet observé peut fournir son propre fichier à sa racine ; sinon DriftLight charge celui livré avec le paquet.
+L'ordre est strict :
 
-Le score combine :
+1. règle absolue de protection du travail sale ;
+2. exemptions (`current-intent`, lecture du tour, plan, Git ignore, création du tour) ;
+3. signaux de comportement observables ;
+4. signaux structurels dans `shadowScore`.
 
-- distance au fichier ancre dans le graphe d'imports ;
-- rareté historique du fichier ;
-- cooccurrence avec les ancres ;
-- lignes supprimées et nombre de fichiers touchés dans le tour ;
-- sensibilité dérivée du dépôt ;
-- forte contribution négative lorsque le fichier est explicitement nommé.
+Les exemptions implicites de lecture, Git ignore et création ne couvrent jamais une destruction, un secret ou un ajout de dépendance. La création est bornée au tour courant. Les lectures issues de Read, Grep et Glob ainsi que les chemins du plan sont captées par les hooks et journalisées sans conserver le contenu complet des outils.
 
-Les ancres sont les fichiers JS/TS nommés ou résolus depuis `.driftlight/current-intent.json`. Sans ancre résoluble, la distance et la cooccurrence sont indisponibles. Un fichier non connecté reçoit la valeur de risque définie par la configuration. Chaque événement conserve sa décomposition complète sous `scoreBreakdown`.
+L'étage comportemental combine explicitement `write-without-read`, `destructive-edit`, `full-file-reformat`, `dependency-added` et `sensitive-file`. Un signal rouge gagne ; le nombre de signaux orange nécessaire pour escalader est configurable. Un bump de version n'est pas un ajout de dépendance.
 
-La protection destructive des changements non commités au démarrage reste une règle absolue, prioritaire et hors score. Elle ne peut pas être compensée par une contribution négative. Les commandes destructives restent elles aussi identifiées comme décisions absolues.
+Le `shadowScore` ne contient que `importDistance`, `fileRarity` et `anchorCooccurrence`. `.env`, Markdown, JSON, images et fichiers hors graphe ont une distance explicitement indisponible. Par défaut, ce score n'alerte jamais. `driftlight explain` sépare le verdict effectif de cette observation.
+
+Les commandes sont analysées hors corps de heredoc/here-string. Les dry-runs, `git checkout` de branche et commandes d'aide restent silencieux ; seules les formes réellement mutatrices sont signalées.
+
+`driftlight mark <eventId> --noise|--useful` alimente `.driftlight/feedback-stats.json`, avec des compteurs persistants par étage et par signal. La spécification détaillée est dans [`docs/classification-v2.md`](docs/classification-v2.md).
 
 ## Architecture
 
@@ -193,6 +275,11 @@ La protection destructive des changements non commités au démarrage reste une 
 - `src/status/` — état persistant et acquittement ;
 - `src/session/` — historique local atomique ;
 - `src/claude/` — installation et traitement des hooks Claude Code ;
+- `src/adapters/types.ts` — protocole et contrat d'adapter agent-agnostiques ;
+- `src/adapters/codex/` — normalisation, installation globale, health check et bridge Codex fail-open ;
+- `src/core/normalized-event-processor.ts` — consommation agent-agnostique vers session, intention, classification, statut et notifications ;
+- `src/core/local-core-event-sink.ts` — remise au pipeline puis archivage local tolérant aux pannes ;
+- `src/core/local-event-inbox.ts` — archive locale par messages JSON atomiques, sans serveur réseau ;
 - `src/notify/` — adaptateur de notifications natives, registre anti-bruit persistant et lanceur détaché ;
 - `src/ui/terminal.ts` — signal terminal compact et résumé du tour ;
 - `src/ui/terminal-title.ts` — titre via OSC 0 : séquence rendue à Claude Code en mode hook, écriture directe et pile de titres en mode CLI ;
@@ -217,7 +304,9 @@ Ils n'émettent pas non plus de notification système, alors même qu'ils invoqu
 - watcher par polling, sans optimisation pour les monorepos massifs ;
 - pas d'interface graphique, de diff interactif ou de lancement automatique de l'agent ;
 - pas de rollback ni d'exécution automatique d'une commande destructive ;
-- support agent explicite limité à Claude Code ;
+- Codex ne permet pas encore à `PreToolUse` de forcer le dialogue natif d'approbation (`ask` est reconnu mais non pris en charge) : DriftLight reste donc consultatif et la politique native de Codex décide seule d'afficher Autoriser / Refuser ;
+- les hooks Codex ne disposent pas ici du champ `terminalSequence` utilisé par Claude Code : le statut persistant et les notifications natives fonctionnent, mais le titre du terminal n'est pas piloté depuis le bridge Codex ;
+- le package TypeScript installe un bridge Node (`driftlight-hook`, shim `.cmd` sous npm/Windows) et configure explicitement `node.exe` via `commandWindows` ; il ne produit pas encore un exécutable natif autonome `DriftLight-hook.exe` ;
 - notifications validées sous Windows uniquement ; le chemin macOS partage le même code et la même API mais n'a pas été exécuté sur machine ;
 - `node-notifier` n'a pas été publié depuis février 2022 et entraîne un avertissement `npm audit` *moderate* via `uuid@8`, non exploitable ici puisque seul `uuid.v4()` est appelé, sans argument `buf` ;
 - la bibliothèque embarque des binaires d'affichage (`snoretoast` sous Windows, `terminal-notifier` sous macOS) : rien à installer séparément, mais ce n'est pas du JavaScript pur ;

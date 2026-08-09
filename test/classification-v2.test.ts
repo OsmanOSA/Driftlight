@@ -1,0 +1,351 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { DeterministicClassifier } from "../src/classification/deterministic-classifier.js";
+import { combineBehaviorFindings } from "../src/classification/behavior-signals.js";
+import { loadScoringConfigSync } from "../src/config/scoring-config.js";
+import type { Classification, ClassificationInput, SessionEvent } from "../src/domain/types.js";
+import { captureGitBaseline } from "../src/git/baseline.js";
+import { writeCurrentIntent } from "../src/intent/current-intent.js";
+import { scanRepository } from "../src/observer/snapshot.js";
+import { buildImportGraph } from "../src/profile/import-graph.js";
+import { buildRepoProfile } from "../src/profile/repo-profile.js";
+import { formatScoreExplanation } from "../src/ui/terminal.js";
+
+const TURN = "turn-1";
+
+interface Workspace {
+  root: string;
+  classify: (
+    relativePath: string,
+    overrides?: Partial<ClassificationInput>,
+  ) => Promise<Classification>;
+}
+
+function git(cwd: string, args: string[]): void {
+  execFileSync("git", args, { cwd, stdio: "ignore" });
+}
+
+async function workspace(
+  context: test.TestContext,
+  options: { intent?: string; gitignore?: string; commits?: number; graphFiles?: number; dirtyPath?: string } = {},
+): Promise<Workspace> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "driftlight-v2-"));
+  context.after(async () => await fs.rm(root, { recursive: true, force: true }));
+  await fs.mkdir(path.join(root, "src"), { recursive: true });
+  await fs.writeFile(path.join(root, "package.json"), '{"name":"fixture","version":"1.0.0","dependencies":{"left-pad":"^1.0.0"}}\n');
+  await fs.writeFile(path.join(root, "src", "anchor.ts"), 'import { direct } from "./direct";\nexport const anchor = direct;\n');
+  await fs.writeFile(path.join(root, "src", "direct.ts"), "export const direct = 1;\n");
+  for (let index = 2; index < (options.graphFiles ?? 2); index += 1) {
+    await fs.writeFile(path.join(root, "src", `filler-${index}.ts`), `export const filler${index} = ${index};\n`);
+  }
+  await fs.writeFile(path.join(root, "README.md"), "hello\n");
+  if (options.gitignore !== undefined) await fs.writeFile(path.join(root, ".gitignore"), options.gitignore);
+
+  git(root, ["init"]);
+  git(root, ["config", "user.email", "driftlight@example.test"]);
+  git(root, ["config", "user.name", "DriftLight Test"]);
+  git(root, ["add", "."]);
+  git(root, ["commit", "-m", "initial"]);
+  for (let index = 1; index < (options.commits ?? 1); index += 1) {
+    await fs.writeFile(path.join(root, "README.md"), `hello ${index}\n`);
+    git(root, ["add", "README.md"]);
+    git(root, ["commit", "-m", `history-${index}`]);
+  }
+  if (options.dirtyPath) {
+    await fs.writeFile(path.join(root, ...options.dirtyPath.split("/")), "travail utilisateur non commité\n");
+  }
+
+  const baseline = await captureGitBaseline(root);
+  const snapshot = await scanRepository(root);
+  const scoringConfig = loadScoringConfigSync(root);
+  await buildRepoProfile(root, snapshot, scoringConfig);
+  await buildImportGraph(root, snapshot);
+  await writeCurrentIntent(root, options.intent ?? "Corrige src/anchor.ts", { turnId: TURN, resetScope: true });
+
+  const classifier = new DeterministicClassifier();
+  return {
+    root,
+    classify: async (relativePath, overrides = {}) => {
+      const current = await scanRepository(root);
+      return classifier.classify({
+        root,
+        change: { path: relativePath, kind: "modified" },
+        baseline,
+        initialSnapshot: snapshot,
+        currentSnapshot: current,
+        changedFileCount: 1,
+        deletedFileCount: 0,
+        agentReads: [],
+        emittedRuleIds: [],
+        operation: { kind: "edit", deletedLineCount: 0 },
+        ...overrides,
+      });
+    },
+  };
+}
+
+// ── Étage 1 — exemptions ─────────────────────────────────────────────────────
+
+test("v2: un fichier lu avant écriture est exempté, sans alerte", async (context) => {
+  const workspaceContext = await workspace(context);
+  const verdict = await workspaceContext.classify("src/direct.ts", {
+    agentReads: [{ path: "src/direct.ts", turnId: TURN, timestamp: "2026-01-01T00:00:00.000Z" }],
+  });
+
+  assert.equal(verdict.level, "GREEN");
+  assert.equal(verdict.stage, "exempt");
+  assert.equal(verdict.exemptedBy, "read-this-turn");
+});
+
+test("v2: un fichier nommé dans l'intention est exempté même en réécriture intégrale", async (context) => {
+  const workspaceContext = await workspace(context, { intent: "Réécris src/direct.ts entièrement" });
+  const verdict = await workspaceContext.classify("src/direct.ts", {
+    operation: { kind: "write", deletedLineCount: 500 },
+  });
+
+  assert.equal(verdict.level, "GREEN");
+  assert.equal(verdict.exemptedBy, "named-in-intent");
+});
+
+test("v2: la lecture n'exempte plus une opération destructive", async (context) => {
+  const workspaceContext = await workspace(context);
+  // Lire avant de vider est le déroulement normal d'une édition destructive :
+  // un veto absolu ouvrirait un trou en faux négatifs.
+  const verdict = await workspaceContext.classify("src/direct.ts", {
+    agentReads: [{ path: "src/direct.ts", turnId: TURN, timestamp: "2026-01-01T00:00:00.000Z" }],
+    operation: { kind: "write", deletedLineCount: 400 },
+  });
+
+  assert.notEqual(verdict.stage, "exempt");
+  assert.notEqual(verdict.level, "GREEN");
+  assert.ok(verdict.codes.includes("destructive-edit"));
+});
+
+test("v2: gitignore n'exempte pas un fichier correspondant à un motif de secret", async (context) => {
+  const workspaceContext = await workspace(context, { gitignore: "node_modules/\n.env\ndist/\n" });
+
+  // .env est gitignoré dans la quasi-totalité des projets : sans cette limite,
+  // l'exemption rendrait invisible exactement la catégorie à protéger.
+  const secret = await workspaceContext.classify(".env");
+  assert.notEqual(secret.exemptedBy, "git-ignored");
+  assert.equal(secret.level, "RED");
+  assert.ok(secret.codes.includes("sensitive-file"));
+
+  // Un artefact de build ordinaire, lui, reste bien exempté.
+  const artifact = await workspaceContext.classify("dist/bundle.js");
+  assert.equal(artifact.level, "GREEN");
+  assert.equal(artifact.exemptedBy, "git-ignored");
+});
+
+// ── Étage 2 — signaux de comportement ────────────────────────────────────────
+
+test("v2: la combinaison des signaux suit la règle configurée", async (context) => {
+  const workspaceContext = await workspace(context);
+  const config = loadScoringConfigSync(workspaceContext.root);
+
+  assert.equal(combineBehaviorFindings([], config), "GREEN");
+  assert.equal(combineBehaviorFindings([{ id: "a", severity: "ORANGE", reason: "" }], config), "ORANGE");
+  assert.equal(
+    combineBehaviorFindings(
+      [{ id: "a", severity: "ORANGE", reason: "" }, { id: "b", severity: "ORANGE", reason: "" }],
+      config,
+    ),
+    "RED",
+    "deux signaux orange escaladent au seuil configuré",
+  );
+  assert.equal(combineBehaviorFindings([{ id: "a", severity: "RED", reason: "" }], config), "RED");
+});
+
+test("v2: un ajout de dépendance alerte, un changement de version non", async (context) => {
+  const workspaceContext = await workspace(context);
+
+  await fs.writeFile(
+    path.join(workspaceContext.root, "package.json"),
+    '{"name":"fixture","version":"1.0.0","dependencies":{"left-pad":"^9.9.9"}}\n',
+  );
+  const bump = await workspaceContext.classify("package.json", {
+    agentReads: [{ path: "package.json", turnId: TURN, timestamp: "2026-01-01T00:00:00.000Z" }],
+  });
+  assert.ok(!bump.codes.includes("dependency-added"), "un bump de version n'est pas un ajout");
+
+  await fs.writeFile(
+    path.join(workspaceContext.root, "package.json"),
+    '{"name":"fixture","version":"1.0.0","dependencies":{"left-pad":"^1.0.0","lodash":"^4.0.0"}}\n',
+  );
+  const added = await workspaceContext.classify("package.json", {
+    agentReads: [{ path: "package.json", turnId: TURN, timestamp: "2026-01-01T00:00:00.000Z" }],
+  });
+  assert.ok(added.codes.includes("dependency-added"));
+  assert.match(added.reasons.join(" "), /lodash/);
+});
+
+// ── Étage 3 — observation seulement ──────────────────────────────────────────
+
+test("v2: importDistance est indisponible hors du graphe, jamais compté", async (context) => {
+  const workspaceContext = await workspace(context);
+  const verdict = await workspaceContext.classify(".env");
+
+  const distance = verdict.shadowScore?.signals.find((signal) => signal.id === "importDistance");
+  assert.ok(distance, "le signal doit rester listé pour la traçabilité");
+  assert.equal(distance?.available, false, "un .env n'est pas un module : signal non applicable");
+  assert.equal(distance?.contribution, 0, "un signal indisponible ne contribue jamais");
+  assert.match(distance?.explanation ?? "", /hors du graphe/);
+  assert.ok(verdict.shadowScore?.unavailableSignals.includes("importDistance"));
+});
+
+test("v2: un shadowScore élevé n'alerte pas tant que shadowSignalsCanAlert est faux", async (context) => {
+  const workspaceContext = await workspace(context, { graphFiles: 20 });
+  const verdict = await workspaceContext.classify("src/filler-2.ts", {
+    agentReads: [{ path: "src/filler-2.ts", turnId: "tour-précédent", timestamp: "2026-01-01T00:00:00.000Z" }],
+  });
+
+  assert.equal(verdict.level, "GREEN", "l'étage 3 ne décide pas");
+  assert.ok(verdict.shadowScore, "mais il est bien mesuré et journalisé");
+  assert.equal(verdict.shadowScore?.mode, "scored");
+  assert.equal(verdict.shadowScore?.verdict, "RED");
+});
+
+test("v2: shadowSignalsCanAlert promeut le shadowScore sans diminuer l'étage 2", async (context) => {
+  const workspaceContext = await workspace(context, { graphFiles: 20 });
+  await fs.mkdir(path.join(workspaceContext.root, ".driftlight"), { recursive: true });
+  await fs.writeFile(
+    path.join(workspaceContext.root, ".driftlight", "config.json"),
+    JSON.stringify({ shadowSignalsCanAlert: true }),
+  );
+  const verdict = await workspaceContext.classify("src/filler-2.ts", {
+    agentReads: [{ path: "src/filler-2.ts", turnId: "tour-précédent", timestamp: "2026-01-01T00:00:00.000Z" }],
+  });
+  assert.equal(verdict.level, "RED");
+  assert.equal(verdict.stage, "shadow");
+  assert.equal(verdict.ruleId, "shadow-score");
+
+  const behaviorRed = await workspaceContext.classify("src/direct.ts", {
+    operation: { kind: "write", deletedLineCount: 0 },
+  });
+  assert.equal(behaviorRed.level, "RED");
+  assert.equal(behaviorRed.stage, "behavior");
+});
+
+test("v2: l'exemption de création expire au tour suivant", async (context) => {
+  const workspaceContext = await workspace(context);
+  await fs.writeFile(path.join(workspaceContext.root, "src", "new.ts"), "export const value = 1;\n");
+  const first = await workspaceContext.classify("src/new.ts", {
+    change: { path: "src/new.ts", kind: "created" },
+  });
+  assert.equal(first.exemptedBy, "created-this-session");
+
+  const later = await workspaceContext.classify("src/new.ts", {
+    change: { path: "src/new.ts", kind: "modified" },
+    operation: { kind: "write", deletedLineCount: 0 },
+    createdPathsThisTurn: [],
+  });
+  assert.notEqual(later.stage, "exempt");
+  assert.ok(later.codes.includes("destructive-edit"));
+});
+
+test("v2: un reformatage intégral observable est tracé comme signal distinct", async (context) => {
+  const workspaceContext = await workspace(context);
+  const verdict = await workspaceContext.classify("src/direct.ts", {
+    agentReads: [{ path: "src/direct.ts", turnId: TURN, timestamp: "2026-01-01T00:00:00.000Z" }],
+    operation: { kind: "write", deletedLineCount: 0, fullFileReformat: true },
+  });
+  assert.ok(verdict.codes.includes("destructive-edit"));
+  assert.ok(verdict.codes.includes("full-file-reformat"));
+  const signal = verdict.scoreBreakdown.signals.find((item) => item.id === "full-file-reformat");
+  assert.equal(signal?.available, true);
+  assert.equal(signal?.triggered, true);
+});
+
+test("v2: un dépôt jeune renormalise sans planter", async (context) => {
+  const workspaceContext = await workspace(context, { commits: 10, graphFiles: 20 });
+  const verdict = await workspaceContext.classify("src/direct.ts", {
+    agentReads: [{ path: "src/direct.ts", turnId: TURN, timestamp: "2026-01-01T00:00:00.000Z" }],
+  });
+
+  const shadow = verdict.shadowScore;
+  assert.ok(shadow);
+  // Sous 50 commits le taux de modification est indisponible, sous 100 la cooccurrence.
+  assert.ok(shadow!.unavailableSignals.includes("fileRarity"));
+  assert.ok(shadow!.unavailableSignals.includes("anchorCooccurrence"));
+  assert.ok(shadow!.normalizationFactor > 1, "les poids restants sont renormalisés");
+  assert.equal(typeof shadow!.score, "number");
+});
+
+test("v2: l'étage 0 reste rouge malgré lecture, plan et exemption de création", async (context) => {
+  const workspaceContext = await workspace(context, { dirtyPath: "src/direct.ts" });
+  await fs.rm(path.join(workspaceContext.root, "src", "direct.ts"));
+  const verdict = await workspaceContext.classify("src/direct.ts", {
+    change: { path: "src/direct.ts", kind: "deleted" },
+    agentReads: [{ path: "src/direct.ts", turnId: TURN, timestamp: "2026-01-01T00:00:00.000Z" }],
+    declaredPlanPaths: ["src/direct.ts"],
+    createdPathsThisTurn: ["src/direct.ts"],
+    operation: { kind: "observed", deletedLineCount: 1 },
+  });
+  assert.equal(verdict.level, "RED");
+  assert.equal(verdict.stage, "absolute");
+  assert.equal(verdict.exemptedBy, undefined);
+});
+
+test("v2: un projet non-JS garde l'étage 2 quand le graphe est indisponible", async (context) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "driftlight-non-js-"));
+  context.after(async () => await fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(path.join(root, "README.md"), "avant\n");
+  git(root, ["init"]);
+  git(root, ["config", "user.email", "driftlight@example.test"]);
+  git(root, ["config", "user.name", "DriftLight Test"]);
+  git(root, ["add", "."]);
+  git(root, ["commit", "-m", "initial"]);
+  const initial = await scanRepository(root);
+  const baseline = await captureGitBaseline(root);
+  await buildImportGraph(root, initial);
+  await writeCurrentIntent(root, "Modifie un autre document", { turnId: TURN, resetScope: true });
+  await fs.writeFile(path.join(root, "README.md"), "après\n");
+  const current = await scanRepository(root);
+  const verdict = new DeterministicClassifier().classify({
+    root,
+    change: { path: "README.md", kind: "modified", before: initial.files["README.md"], after: current.files["README.md"] },
+    baseline,
+    initialSnapshot: initial,
+    currentSnapshot: current,
+    changedFileCount: 1,
+    deletedFileCount: 0,
+    agentReads: [],
+    emittedRuleIds: [],
+    operation: { kind: "edit", deletedLineCount: 0 },
+  });
+  assert.equal(verdict.stage, "behavior");
+  assert.equal(verdict.level, "ORANGE");
+  assert.equal(verdict.shadowScore?.signals.find((signal) => signal.id === "importDistance")?.available, false);
+});
+
+test("v2: explain sépare le verdict effectif du shadowScore", async (context) => {
+  const workspaceContext = await workspace(context);
+  const classification = await workspaceContext.classify("src/direct.ts", {
+    agentReads: [{ path: "src/direct.ts", turnId: TURN, timestamp: "2026-01-01T00:00:00.000Z" }],
+    operation: { kind: "write", deletedLineCount: 100 },
+  });
+  const event: SessionEvent = {
+    id: "event-v2-explain",
+    timestamp: "2026-01-01T00:00:00.000Z",
+    type: "proposed-action",
+    path: "src/direct.ts",
+    changeKind: "modified",
+    level: classification.level,
+    reasons: classification.reasons,
+    codes: classification.codes,
+    ruleId: classification.ruleId,
+    scoreBreakdown: classification.scoreBreakdown,
+    shadowScore: classification.shadowScore,
+    stage: classification.stage,
+    expected: false,
+  };
+  const explanation = formatScoreExplanation(event);
+  assert.match(explanation, /Verdict effectif par table de règles/);
+  assert.match(explanation, /destructive-edit/);
+  assert.match(explanation, /Étage 3 · observation seulement/);
+  assert.match(explanation, /importDistance/);
+});

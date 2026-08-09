@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { CodexAdapter } from "./adapters/codex/adapter.js";
 import { handleClaudeHook } from "./claude/handler.js";
 import { installClaudeHooks } from "./claude/installer.js";
 import type { ClaudeHookInput, SessionRecord } from "./domain/types.js";
@@ -9,6 +10,7 @@ import { captureGitBaseline } from "./git/baseline.js";
 import { addCurrentScope, writeCurrentIntent } from "./intent/current-intent.js";
 import { dispatchNotifications } from "./notify/dispatcher.js";
 import { PollingObserver } from "./observer/polling-observer.js";
+import { updateImportGraph } from "./profile/import-graph.js";
 import {
   addIntent,
   createSession,
@@ -53,6 +55,9 @@ Commandes :
   driftlight add-scope "Nouvelle instruction ou chemin" [--session latest] [--cwd .]
   driftlight ack [--cwd .]
   driftlight claude install [--cwd .]
+  driftlight codex connect
+  driftlight codex disconnect
+  driftlight codex status
   driftlight hook                       # appelé par Claude Code via stdin JSON
 
 Tout reste local dans .driftlight/. Les alertes rouges demandent confirmation ; aucun rollback n'est exécuté.`;
@@ -84,6 +89,7 @@ async function runStart(args: string[]): Promise<void> {
 
   const observer = new PollingObserver(session.cwd, session.initialSnapshot, interval);
   observer.start(async ({ changes, snapshot }) => {
+    await updateImportGraph(session.cwd, snapshot, changes).catch(() => null);
     const events = processChanges(session, changes, snapshot);
     await store.save(session);
     for (const event of events) {
@@ -105,6 +111,7 @@ async function runStart(args: string[]): Promise<void> {
         try {
           const finalBatch = await observer.scanOnce();
           if (finalBatch.changes.length > 0) {
+            await updateImportGraph(session.cwd, finalBatch.snapshot, finalBatch.changes).catch(() => null);
             const events = processChanges(session, finalBatch.changes, finalBatch.snapshot);
             for (const event of events) {
               const signal = formatSignal(event);
@@ -202,6 +209,50 @@ async function runClaude(args: string[]): Promise<void> {
   console.log(`  Les verdicts rouges demanderont confirmation avant l'action (configuration locale modifiable).`);
 }
 
+async function runCodex(args: string[]): Promise<void> {
+  const action = args[1];
+  const adapter = new CodexAdapter();
+  if (action === "connect" || action === "install") {
+    await adapter.install();
+    const status = await adapter.healthCheck();
+    console.log(`✓ Intégration Codex globale installée : ${status.configPath ?? adapter.hooksPath}`);
+    console.log("  Approbations natives Codex : approval_policy=untrusted, approvals_reviewer=user.");
+    console.log("  Open Codex → /hooks → review and trust the DriftLight hook once.");
+    console.log("  État : Installed — approval required");
+    return;
+  }
+  if (action === "disconnect" || action === "uninstall") {
+    await adapter.uninstall();
+    console.log("✓ Intégration Codex retirée ; hooks tiers conservés et réglages d'approbation restaurés s'ils n'avaient pas été modifiés depuis.");
+    return;
+  }
+  if (action === "status") {
+    const status = await adapter.healthCheck();
+    console.log(`Codex · ${status.state}`);
+    console.log(`Détecté : ${status.codexDetected ? "oui" : "non"}`);
+    console.log(`Adapter : ${status.adapterVersion}`);
+    console.log(`Dernier événement : ${status.lastEventAt ?? "aucun"}`);
+    if (status.configPath) console.log(`Configuration : ${status.configPath}`);
+    if (status.trustPath) console.log(`Confiance Codex : ${status.trustPath}`);
+    if (status.hooks?.length) {
+      console.log("Hooks :");
+      const blocking = new Set(status.blockingEvents ?? []);
+      for (const hook of status.hooks) {
+        const mark = !hook.registered ? "?" : hook.enabled ? "✓" : "✗";
+        // « enregistré » et non « actif » : Codex peut connaître un hook sans
+        // l'exécuter, notamment quand son empreinte de confiance est périmée.
+        const detail = !hook.registered
+          ? "inconnu de Codex"
+          : hook.enabled ? "enregistré" : "désactivé";
+        console.log(`  ${mark} ${hook.event.padEnd(18)} ${detail}${blocking.has(hook.event) ? "  ← bloque" : ""}`);
+      }
+    }
+    if (status.message) console.log(status.message);
+    return;
+  }
+  throw new Error("Commande attendue : driftlight codex connect|disconnect|status");
+}
+
 async function runHook(): Promise<void> {
   const raw = await readStdin();
   if (!raw.trim()) return;
@@ -221,6 +272,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     case "add-scope": await runAddScope(args); break;
     case "ack": await runAck(args); break;
     case "claude": await runClaude(args); break;
+    case "codex": await runCodex(args); break;
     case "hook": await runHook(); break;
     case "help":
     case "--help":

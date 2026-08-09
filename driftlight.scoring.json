@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "version": "2.0.0",
+  "scoreScale": 100,
+  "minimumScore": 0,
+  "maximumScore": 100,
+  "thresholds": {
+    "orange": 40,
+    "red": 70
+  },
+  "weights": {
+    "importDistance": 30,
+    "fileRarity": 15,
+    "anchorCooccurrence": 15
+  },
+  "signalParameters": {
+    "minimumGraphFiles": 20,
+    "minimumModificationCommits": 50,
+    "minimumCooccurrenceCommits": 100,
+    "graphDistanceRisk": {
+      "distance0": 0,
+      "distance1": 0.1,
+      "distance2": 0.25,
+      "distance3": 0.55,
+      "perAdditionalHop": 0.15,
+      "disconnected": 1
+    }
+  },
+  "secretPathPatterns": [
+    "(^|/)\\.env(?:\\.|$)",
+    "(^|[._/-])(secret|secrets|token|tokens|credential|credentials)([._/-]|$)",
+    "(^|/)(id_rsa|id_ed25519|private[_-]?key)([._/-]|$)",
+    "\\.(pem|key|p12|pfx)$"
+  ],
+  "behavior": {
+    "escalateToRedAtOrangeCount": 2,
+    "severityWeights": {
+      "GREEN": 0,
+      "ORANGE": 1,
+      "RED": 2
+    },
+    "severities": {
+      "sensitive-file": "RED",
+      "destructive-edit": "ORANGE",
+      "write-without-read": "ORANGE",
+      "dependency-added": "ORANGE",
+      "full-file-reformat": "ORANGE",
+      "destructive-git-command": "RED",
+      "destructive-file-command": "RED",
+      "dependency-command": "ORANGE",
+      "infrastructure-command": "RED"
+    }
+  }
+}

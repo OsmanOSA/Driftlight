@@ -4,10 +4,12 @@
   "description": "Local scope warning light for coding agents",
   "type": "module",
   "bin": {
-    "driftlight": "dist/src/cli.js"
+    "driftlight": "dist/src/cli.js",
+    "driftlight-hook": "dist/src/adapters/codex/hook-cli.js"
   },
   "files": [
     "dist/src",
+    "docs",
     "README.md",
     "driftlight.scoring.json"
   ],

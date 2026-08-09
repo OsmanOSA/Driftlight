@@ -117,6 +117,7 @@ export async function dispatchNotifications(
         subject: notificationSubject(event),
         ruleId: event.ruleId,
         sessionId,
+        blocking: blocked.has(event.id),
       });
       if (reservation !== "accepted") {
         decisions.push({ eventId: event.id, level: event.level, outcome: RESERVATION_TO_OUTCOME[reservation] });

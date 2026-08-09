@@ -7,11 +7,19 @@ const REQUIRED_WEIGHTS: Array<keyof ScoringConfig["weights"]> = [
   "importDistance",
   "fileRarity",
   "anchorCooccurrence",
-  "deletedLines",
-  "turnFileCount",
-  "sensitiveFile",
-  "explicitIntent",
 ];
+
+const REQUIRED_BEHAVIOR_SIGNALS = [
+  "sensitive-file",
+  "destructive-edit",
+  "write-without-read",
+  "dependency-added",
+  "full-file-reformat",
+  "destructive-git-command",
+  "destructive-file-command",
+  "dependency-command",
+  "infrastructure-command",
+] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -43,8 +51,16 @@ function validateScoringConfig(value: unknown, source: string): ScoringConfig {
   for (const key of ["distance0", "distance1", "distance2", "distance3", "perAdditionalHop", "disconnected"]) {
     finiteNumber(graphRisk[key], `signalParameters.graphDistanceRisk.${key}`);
   }
-  finiteNumber(value.signalParameters.deletedLinesSaturation, "signalParameters.deletedLinesSaturation");
-  finiteNumber(value.signalParameters.turnFileCountSaturation, "signalParameters.turnFileCountSaturation");
+  const minimumGraphFiles = finiteNumber(value.signalParameters.minimumGraphFiles, "signalParameters.minimumGraphFiles");
+  if (!Number.isInteger(minimumGraphFiles) || minimumGraphFiles < 1) {
+    throw new Error("Configuration invalide : signalParameters.minimumGraphFiles doit être un entier positif.");
+  }
+  for (const key of ["minimumModificationCommits", "minimumCooccurrenceCommits"] as const) {
+    const minimum = finiteNumber(value.signalParameters[key], `signalParameters.${key}`);
+    if (!Number.isInteger(minimum) || minimum < 1) {
+      throw new Error(`Configuration invalide : signalParameters.${key} doit être un entier positif.`);
+    }
+  }
   const scoreScale = finiteNumber(value.scoreScale, "scoreScale");
   const minimumScore = finiteNumber(value.minimumScore, "minimumScore");
   const maximumScore = finiteNumber(value.maximumScore, "maximumScore");
@@ -52,11 +68,30 @@ function validateScoringConfig(value: unknown, source: string): ScoringConfig {
     .map((key) => weights[key])
     .filter((weight): weight is number => typeof weight === "number" && weight > 0)
     .reduce((sum, weight) => sum + weight, 0);
-  if (finiteNumber(weights.explicitIntent, "weights.explicitIntent") > -scoreScale || positiveWeightTotal <= 0) {
-    throw new Error("Configuration de score invalide : explicitIntent doit garantir un score nul pour un fichier nommé.");
-  }
+  if (positiveWeightTotal <= 0) throw new Error("Configuration de score invalide : au moins un poids shadow doit être positif.");
   if (minimumScore >= orange || red > maximumScore || minimumScore >= maximumScore) {
     throw new Error("Configuration de score invalide : seuils hors des bornes du score.");
+  }
+  // Étage 2 : sévérités et seuil d'escalade sont configurables, donc validés.
+  if (!isRecord(value.behavior) || !isRecord(value.behavior.severities) || !isRecord(value.behavior.severityWeights)) {
+    throw new Error(`Configuration de comportement absente : ${source}`);
+  }
+  const escalation = finiteNumber(value.behavior.escalateToRedAtOrangeCount, "behavior.escalateToRedAtOrangeCount");
+  if (!Number.isInteger(escalation) || escalation < 1) {
+    throw new Error("Configuration invalide : behavior.escalateToRedAtOrangeCount doit être un entier positif.");
+  }
+  for (const [id, severity] of Object.entries(value.behavior.severities)) {
+    if (severity !== "GREEN" && severity !== "ORANGE" && severity !== "RED") {
+      throw new Error(`Sévérité de comportement invalide pour ${id} : ${String(severity)}`);
+    }
+  }
+  for (const severity of ["GREEN", "ORANGE", "RED"] as const) {
+    finiteNumber(value.behavior.severityWeights[severity], `behavior.severityWeights.${severity}`);
+  }
+  for (const id of REQUIRED_BEHAVIOR_SIGNALS) {
+    if (!(id in value.behavior.severities)) {
+      throw new Error(`Configuration de comportement incomplète : behavior.severities.${id}`);
+    }
   }
   return value as unknown as ScoringConfig;
 }

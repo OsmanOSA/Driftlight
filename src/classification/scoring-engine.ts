@@ -10,12 +10,13 @@ import type {
   ScoringConfig,
   Severity,
 } from "../domain/types.js";
-import { cooccurrenceKey, sensitivitySourcesForPath } from "../profile/repo-profile.js";
+import { cooccurrenceKey } from "../profile/repo-profile.js";
 import { toPosixPath } from "../shared/paths.js";
-import { pathExplicitlyExpected } from "./rules.js";
+
+type ShadowSignalId = "importDistance" | "fileRarity" | "anchorCooccurrence";
 
 interface RawSignal {
-  id: keyof ScoringConfig["weights"];
+  id: ShadowSignalId;
   available: boolean;
   rawValue: ScoreRawValue;
   normalizedValue: number | null;
@@ -80,15 +81,6 @@ function graphRisk(distance: number | "disconnected", config: ScoringConfig): nu
   return clamp(risk.distance3 + Math.max(0, distance - 3) * risk.perAdditionalHop, 0, 1);
 }
 
-function deletedLineCount(input: ClassificationInput): number {
-  if (input.change.kind === "deleted") return input.change.before?.lineCount ?? 0;
-  return Math.max(
-    0,
-    input.operation?.deletedLineCount
-      ?? ((input.change.before?.lineCount ?? 0) - (input.change.after?.lineCount ?? input.change.before?.lineCount ?? 0)),
-  );
-}
-
 function rawSignals(
   input: ClassificationInput,
   intent: CurrentIntentState | null,
@@ -98,18 +90,21 @@ function rawSignals(
 ): RawSignal[] {
   const filePath = toPosixPath(input.change.path);
   const anchors = resolveIntentAnchors(intent, graph);
-  const explicit = pathExplicitlyExpected(intent?.text ?? "", intent?.scopeAdditions ?? [], filePath);
-  const distanceAvailable = Boolean(graph && anchors.length > 0);
+  const inGraph = Boolean(graph?.nodes.includes(filePath));
+  const graphMature = Boolean(graph && graph.nodes.length >= config.signalParameters.minimumGraphFiles);
+  const distanceAvailable = Boolean(graphMature && anchors.length > 0 && inGraph);
   const distance = distanceAvailable && graph ? importDistance(graph, anchors, filePath) : null;
+
   const rateAvailable = profile?.modificationRates.available ?? false;
+  // Après le minimum de commits, l'absence du fichier dans l'historique est un
+  // fait observé (taux nul), pas une valeur de remplacement.
   const modificationRate = rateAvailable ? profile?.modificationRates.rates[filePath] ?? 0 : null;
-  const cooccurrenceAvailable = Boolean(profile?.cooccurrence.available && anchors.length > 0);
+
+  const cooccurrenceAvailable = Boolean(profile?.cooccurrence.available && graphMature && anchors.length > 0);
   const cooccurrences = cooccurrenceAvailable && profile
     ? anchors.map((anchor) => anchor === filePath ? 1 : profile.cooccurrence.frequencies[cooccurrenceKey(anchor, filePath)] ?? 0)
     : [];
   const maximumCooccurrence = cooccurrences.length > 0 ? Math.max(...cooccurrences) : null;
-  const sensitivitySources = profile ? sensitivitySourcesForPath(profile, filePath) : [];
-  const removedLines = deletedLineCount(input);
 
   return [
     {
@@ -118,8 +113,16 @@ function rawSignals(
       rawValue: distance,
       normalizedValue: distance === null ? null : graphRisk(distance, config),
       explanation: distanceAvailable
-        ? distance === "disconnected" ? "Aucun chemin vers une ancre de l'intention." : `Distance ${distance} depuis une ancre de l'intention.`
-        : "Aucune ancre JS/TS résoluble depuis l'intention courante.",
+        ? distance === "disconnected"
+          ? "Aucun chemin vers une ancre de l'intention."
+          : `Distance ${distance} depuis une ancre de l'intention.`
+        : !graph
+          ? "Graphe d'imports indisponible."
+          : !inGraph
+            ? "Fichier hors du graphe d'imports : signal non applicable, jamais remplacé par une valeur par défaut."
+            : !graphMature
+              ? `Graphe immature : ${graph.nodes.length}/${config.signalParameters.minimumGraphFiles} fichiers JS/TS.`
+              : "Aucune ancre JS/TS résoluble depuis l'intention courante.",
     },
     {
       id: "fileRarity",
@@ -137,37 +140,11 @@ function rawSignals(
       normalizedValue: maximumCooccurrence === null ? null : clamp(1 - maximumCooccurrence, 0, 1),
       explanation: cooccurrenceAvailable
         ? `Cooccurrence maximale avec les ancres : ${round((maximumCooccurrence ?? 0) * 100)} %.`
-        : profile?.cooccurrence.reason ?? "Cooccurrence indisponible sans ancre résolue.",
-    },
-    {
-      id: "deletedLines",
-      available: true,
-      rawValue: removedLines,
-      normalizedValue: clamp(removedLines / config.signalParameters.deletedLinesSaturation, 0, 1),
-      explanation: `${removedLines} ligne(s) supprimée(s) nettes.`,
-    },
-    {
-      id: "turnFileCount",
-      available: true,
-      rawValue: input.changedFileCount,
-      normalizedValue: clamp(input.changedFileCount / config.signalParameters.turnFileCountSaturation, 0, 1),
-      explanation: `${input.changedFileCount} fichier(s) touché(s) dans le tour.`,
-    },
-    {
-      id: "sensitiveFile",
-      available: profile !== null,
-      rawValue: { sensitive: sensitivitySources.length > 0, sources: sensitivitySources.join(", ") || null },
-      normalizedValue: profile ? (sensitivitySources.length > 0 ? 1 : 0) : null,
-      explanation: profile
-        ? sensitivitySources.length > 0 ? `Sensibilité dérivée : ${sensitivitySources.join(", ")}.` : "Aucun motif sensible dérivé ne correspond."
-        : "Profil de sensibilité indisponible.",
-    },
-    {
-      id: "explicitIntent",
-      available: true,
-      rawValue: explicit,
-      normalizedValue: explicit ? 1 : 0,
-      explanation: explicit ? "Le fichier est explicitement nommé dans l'intention." : "Le fichier n'est pas explicitement nommé.",
+        : !profile?.cooccurrence.available
+          ? profile?.cooccurrence.reason ?? "Profil Git indisponible."
+          : !graphMature
+            ? "Cooccurrence indisponible tant que le graphe d'imports est immature."
+            : "Cooccurrence indisponible sans ancre résolue.",
     },
   ];
 }
@@ -193,20 +170,24 @@ export function scoreClassification(
   const signals: ScoreSignalBreakdown[] = raw.map((signal) => {
     const weight = config.weights[signal.id];
     const normalizedValue = signal.available ? signal.normalizedValue : null;
-    const factor = weight > 0 ? normalizationFactor : 1;
     return {
       id: signal.id,
       available: signal.available,
       rawValue: signal.rawValue,
       normalizedValue,
       weight,
-      contribution: normalizedValue === null ? 0 : round(normalizedValue * weight * factor),
+      contribution: normalizedValue === null ? 0 : round(normalizedValue * weight * normalizationFactor),
       explanation: signal.explanation,
     };
   });
-  const unclampedScore = round(signals.reduce((sum, signal) => sum + signal.contribution, 0));
-  const score = round(clamp(unclampedScore, config.minimumScore, config.maximumScore));
-  const verdict = verdictForScore(score, config);
+  const hasAvailableSignal = signals.some((signal) => signal.available && signal.weight > 0);
+  const unclampedScore = hasAvailableSignal
+    ? round(signals.reduce((sum, signal) => sum + signal.contribution, 0))
+    : null;
+  const score = unclampedScore === null
+    ? null
+    : round(clamp(unclampedScore, config.minimumScore, config.maximumScore));
+  const verdict = score === null ? "GREEN" : verdictForScore(score, config);
   return {
     mode: "scored",
     configVersion: config.version,

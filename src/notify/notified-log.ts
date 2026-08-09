@@ -35,6 +35,16 @@ export interface ReservationRequest {
   subject: string;
   ruleId: string;
   sessionId: string;
+  /**
+   * Le hook a effectivement retenu l'action et attend une réponse humaine.
+   *
+   * Un blocage n'est pas du bruit répétitif : c'est une demande de décision, et
+   * l'agent reste arrêté tant qu'elle n'est pas rendue. Le taire parce qu'une
+   * alerte identique a déjà été émise laisserait l'utilisateur ignorer que
+   * l'agent l'attend. La fenêtre de silence et le plafond ne s'y appliquent donc
+   * pas — la cadence est de toute façon bornée par le temps de réponse humain.
+   */
+  blocking?: boolean;
   now?: number;
 }
 
@@ -132,24 +142,31 @@ export class NotificationLedger {
         state.suppressedByCap = 0;
       }
 
+      // Idempotence : un même eventId ne notifie jamais deux fois, y compris
+      // pour un blocage — c'est la même demande, pas une nouvelle.
       if (state.entries.some((entry) => entry.eventId === request.eventId)) {
         return "duplicate-event";
       }
 
-      const recent = state.entries.some((entry) =>
-        entry.subject === request.subject
-        && entry.ruleId === request.ruleId
-        && now - Date.parse(entry.notifiedAt) < SILENCE_WINDOW_MS,
-      );
-      if (recent) {
-        writeLedger(this.root, state);
-        return "duplicate-recent";
-      }
+      // Un blocage court-circuite l'anti-bruit : l'agent est arrêté et attend
+      // une réponse. Une deuxième tentative sur le même fichier est une
+      // deuxième demande de décision, pas une répétition à taire.
+      if (!request.blocking) {
+        const recent = state.entries.some((entry) =>
+          entry.subject === request.subject
+          && entry.ruleId === request.ruleId
+          && now - Date.parse(entry.notifiedAt) < SILENCE_WINDOW_MS,
+        );
+        if (recent) {
+          writeLedger(this.root, state);
+          return "duplicate-recent";
+        }
 
-      if (state.notifiedInSession >= SESSION_NOTIFICATION_CAP) {
-        state.suppressedByCap += 1;
-        writeLedger(this.root, state);
-        return "session-cap";
+        if (state.notifiedInSession >= SESSION_NOTIFICATION_CAP) {
+          state.suppressedByCap += 1;
+          writeLedger(this.root, state);
+          return "session-cap";
+        }
       }
 
       state.entries.push({

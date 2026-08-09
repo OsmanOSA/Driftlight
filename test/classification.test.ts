@@ -199,8 +199,8 @@ test("pre-existing work alerts only for destructive out-of-scope operations", ()
       operation: { kind: "write" },
     },
   ));
-  assert.equal(fullRewrite.level, "ORANGE");
-  assert.equal(fullRewrite.ruleId, "preexisting-destructive-edit");
+  assert.equal(fullRewrite.level, "RED");
+  assert.equal(fullRewrite.ruleId, "preexisting-file-rewritten");
 
   const previouslyReadNormalEdit = classifier.classify(input(
     "Change something else",
@@ -241,11 +241,20 @@ test("the significant line-deletion threshold is configurable", () => {
 
   const result = classifier.classify(classificationInput);
   assert.equal(result.level, "ORANGE");
-  assert.equal(result.ruleId, "preexisting-destructive-edit");
+  assert.equal(result.ruleId, "destructive-edit");
 });
 
 test("destructive Git commands are observed as red and never auto-executed", () => {
   const findings = classifyCommand("git restore .", { ...emptyBaseline, files: [{ path: "work.ts", status: " M", kind: "modified" }] });
   assert.equal(findings[0]?.severity, "RED");
   assert.equal(findings[0]?.code, "destructive-git-command");
+});
+
+test("command classification ignores dry-runs, branch checkout and heredoc bodies", () => {
+  assert.deepEqual(classifyCommand("git clean -n", emptyBaseline), []);
+  assert.deepEqual(classifyCommand("git clean -nfd", emptyBaseline), []);
+  assert.deepEqual(classifyCommand("git checkout feature/my-branch", emptyBaseline), []);
+  assert.deepEqual(classifyCommand("node <<'EOF'\ngit clean -fd\nEOF", emptyBaseline), []);
+  assert.equal(classifyCommand("git clean -fd", emptyBaseline)[0]?.code, "destructive-git-command");
+  assert.equal(classifyCommand("git checkout -- src/file.ts", emptyBaseline)[0]?.code, "destructive-git-command");
 });

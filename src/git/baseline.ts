@@ -1,45 +1,39 @@
-import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import type { GitBaseline, GitChangeKind, GitFileState } from "../domain/types.js";
 import { hashBuffer } from "../shared/hash.js";
 import { toPosixPath } from "../shared/paths.js";
 
-function gitText(cwd: string, args: string[]): string | null {
-  try {
-    return execFileSync("git", args, {
+function gitText(cwd: string, args: string[]): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile("git", args, {
       cwd,
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-  } catch {
-    return null;
-  }
+      windowsHide: true,
+    }, (error, stdout) => resolve(error ? null : stdout.trim()));
+  });
 }
 
-function gitRawText(cwd: string, args: string[]): string | null {
-  try {
-    return execFileSync("git", args, {
+function gitRawText(cwd: string, args: string[]): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile("git", args, {
       cwd,
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-  } catch {
-    return null;
-  }
+      windowsHide: true,
+    }, (error, stdout) => resolve(error ? null : stdout));
+  });
 }
 
-function gitBuffer(cwd: string, args: string[]): Buffer | null {
-  try {
-    return execFileSync("git", args, {
+function gitBuffer(cwd: string, args: string[]): Promise<Buffer | null> {
+  return new Promise((resolve) => {
+    execFile("git", args, {
       cwd,
       encoding: "buffer",
-      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
       maxBuffer: 20 * 1024 * 1024,
-    });
-  } catch {
-    return null;
-  }
+    }, (error, stdout) => resolve(error ? null : stdout));
+  });
 }
 
 function classifyGitStatus(status: string): GitChangeKind {
@@ -70,8 +64,14 @@ export function parsePorcelainV1(output: string): Array<Pick<GitFileState, "path
   return entries;
 }
 
+/** Résout seulement la racine Git, sans recalculer la baseline complète. */
+export async function resolveGitRoot(cwd: string): Promise<string> {
+  const root = await gitText(cwd, ["rev-parse", "--show-toplevel"]);
+  return path.resolve(root || cwd);
+}
+
 export async function captureGitBaseline(cwd: string): Promise<GitBaseline> {
-  const rootText = gitText(cwd, ["rev-parse", "--show-toplevel"]);
+  const rootText = await gitText(cwd, ["rev-parse", "--show-toplevel"]);
   const fallbackRoot = path.resolve(cwd);
 
   if (!rootText) {
@@ -86,26 +86,33 @@ export async function captureGitBaseline(cwd: string): Promise<GitBaseline> {
   }
 
   const root = path.resolve(rootText);
-  const statusOutput = gitRawText(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]) ?? "";
+  const statusOutput = await gitRawText(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]) ?? "";
   const parsed = parsePorcelainV1(statusOutput);
 
-  const files: GitFileState[] = parsed.map((entry) => {
+  const files: GitFileState[] = await Promise.all(parsed.map(async (entry) => {
     const absolutePath = path.join(root, ...entry.path.split("/"));
-    const workingBuffer = existsSync(absolutePath) ? gitBuffer(root, ["hash-object", "--no-filters", "--", absolutePath]) : null;
-    const headBuffer = gitBuffer(root, ["show", `HEAD:${entry.path}`]);
+    const [workingBuffer, headBuffer] = await Promise.all([
+      existsSync(absolutePath) ? fs.readFile(absolutePath).catch(() => null) : Promise.resolve(null),
+      gitBuffer(root, ["show", `HEAD:${entry.path}`]),
+    ]);
 
     return {
       ...entry,
-      ...(workingBuffer ? { workingHash: workingBuffer.toString("utf8").trim() } : {}),
+      ...(workingBuffer ? { workingHash: hashBuffer(workingBuffer) } : {}),
       ...(headBuffer ? { headHash: hashBuffer(headBuffer) } : {}),
     };
-  });
+  }));
+
+  const [branch, commit] = await Promise.all([
+    gitText(root, ["branch", "--show-current"]),
+    gitText(root, ["rev-parse", "HEAD"]),
+  ]);
 
   return {
     isGit: true,
     root,
-    branch: gitText(root, ["branch", "--show-current"]) || null,
-    commit: gitText(root, ["rev-parse", "HEAD"]) || null,
+    branch: branch || null,
+    commit: commit || null,
     capturedAt: new Date().toISOString(),
     files,
   };

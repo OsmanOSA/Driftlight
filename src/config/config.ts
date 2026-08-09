@@ -10,6 +10,7 @@ export const DEFAULT_CONFIG: DriftLightConfig = {
   notifyOnOrange: false,
   notificationSound: true,
   terminalTitle: true,
+  shadowSignalsCanAlert: false,
 };
 
 function boolean(value: unknown, fallback: boolean): boolean {
@@ -31,6 +32,7 @@ export function loadConfigSync(root: string): DriftLightConfig {
       notifyOnOrange: boolean(parsed.notifyOnOrange, DEFAULT_CONFIG.notifyOnOrange),
       notificationSound: boolean(parsed.notificationSound, DEFAULT_CONFIG.notificationSound),
       terminalTitle: boolean(parsed.terminalTitle, DEFAULT_CONFIG.terminalTitle),
+      shadowSignalsCanAlert: boolean(parsed.shadowSignalsCanAlert, DEFAULT_CONFIG.shadowSignalsCanAlert),
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return DEFAULT_CONFIG;
