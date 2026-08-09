@@ -12,6 +12,8 @@ DriftLight est un voyant local qui compare la demande donnée à un coding agent
 - protection renforcée des changements présents avant la session ;
 - classifieur déterministe à score cumulé, toujours rendu en `GREEN | ORANGE | RED` ;
 - confirmation Claude Code sur rouge par défaut, sans exécution destructive automatique ;
+- notification système sur rouge, plafonnée et dédupliquée, jamais bloquante ;
+- titre du terminal reflétant le statut, restauré en fin de session ;
 - aucun affichage pour les événements verts.
 
 DriftLight ignore son propre dossier `.driftlight/`, ainsi que les sorties volumineuses habituelles (`node_modules/`, `dist/`, `coverage/`, etc.). L'historique conserve des chemins, des métadonnées et des empreintes SHA-256, jamais le contenu des fichiers.
@@ -69,6 +71,8 @@ L'installation fusionne les entrées dans `.claude/settings.local.json` sans rem
 
 Le hook `PreToolUse` classe les écritures et commandes proposées. Sur rouge, il renvoie `permissionDecision: "ask"` : Claude Code suspend l'action dans son dialogue de permission jusqu'à la réponse de l'utilisateur. L'orange est seulement journalisé par défaut. `PostToolUse` enregistre aussi les fichiers lus par l'agent, puis `PostToolUse` et `FileChanged` mettent l'historique à jour à partir de l'état réel du disque. Le hook `Stop` affiche uniquement les alertes orange et rouges du tour qui se termine.
 
+Les hooks joignent par ailleurs un champ `terminalSequence` à leur réponse pour le titre du terminal (voir plus bas). Ce champ est purement additif : il ne retient jamais une action, et une version de Claude Code qui ne le connaîtrait pas l'ignore sans conséquence.
+
 Chaque `UserPromptSubmit` écrit atomiquement `.driftlight/current-intent.json`. Le classifieur relit directement ce fichier au moment de chaque décision, sans propagation entre processus. Un fichier explicitement nommé est donc exempté, y compris s'il est sensible.
 
 La protection du travail Git préexistant ne signale plus le simple fait de continuer un fichier déjà modifié. Elle exige simultanément une baseline non commitée, un fichier hors intention et non lu pendant le tour, ainsi qu'une opération destructive : suppression, `Write` complet, édition sans aucune lecture antérieure dans la session ou suppression nette importante de lignes. Une seule alerte est conservée par fichier et par tour.
@@ -87,7 +91,17 @@ La configuration locale facultative se trouve dans `.driftlight/config.json` :
 }
 ```
 
-`blockOnRed` vaut `true` par défaut. `blockOnOrange` vaut `false` ; s'il est explicitement activé, l'orange utilise lui aussi le dialogue de confirmation de Claude Code. `largeLineDeletionThreshold` fixe le nombre minimal de lignes supprimées nettes pour considérer l'édition comme destructive. Aucun de ces réglages ne désactive la classification.
+| Clé | Défaut | Effet |
+| --- | --- | --- |
+| `blockOnRed` | `true` | Le rouge passe par le dialogue de confirmation de Claude Code. |
+| `blockOnOrange` | `false` | S'il est activé, l'orange déclenche lui aussi la confirmation. |
+| `largeLineDeletionThreshold` | `50` | Lignes supprimées nettes à partir desquelles l'édition est jugée destructive. |
+| `notifyOnRed` | `true` | Notification système sur rouge. |
+| `notifyOnOrange` | `false` | Notification système sur orange. |
+| `notificationSound` | `true` | Son accompagnant la notification. |
+| `terminalTitle` | `true` | Mise à jour du titre du terminal. |
+
+**Aucun de ces réglages ne désactive la classification.** Ils ne touchent qu'à la restitution : un événement non notifié et non bloquant reste intégralement classé, journalisé et visible dans `status`, `explain` et le résumé `Stop`.
 
 ## Notifications natives
 
@@ -175,13 +189,13 @@ La protection destructive des changements non commités au démarrage reste une 
 - `src/classification/` — règles et implémentation du contrat `Classifier` ;
 - `src/profile/` — profil Git, sensibilité dérivée et graphe d'import ;
 - `src/intent/` — intention courante atomique, relue à chaque classification ;
-- `src/config/` — options locales de confirmation ;
+- `src/config/` — options locales de confirmation, de notification et de titre ;
 - `src/status/` — état persistant et acquittement ;
 - `src/session/` — historique local atomique ;
 - `src/claude/` — installation et traitement des hooks Claude Code ;
-- `src/notify/` — adaptateur de notifications natives, journal de déduplication et lanceur détaché ;
-- `src/ui/terminal.ts` — signal terminal compact ;
-- `src/ui/terminal-title.ts` — titre du terminal via OSC 0, empilé puis restauré ;
+- `src/notify/` — adaptateur de notifications natives, registre anti-bruit persistant et lanceur détaché ;
+- `src/ui/terminal.ts` — signal terminal compact et résumé du tour ;
+- `src/ui/terminal-title.ts` — titre via OSC 0 : séquence rendue à Claude Code en mode hook, écriture directe et pile de titres en mode CLI ;
 - `test/fixtures/` — tâches et dérives représentatives.
 
 ## Qualité
@@ -194,6 +208,8 @@ npm run build
 
 Les tests d'intégration créent uniquement des dépôts temporaires et n'exécutent aucune commande destructive contre le dépôt surveillé.
 
+Ils n'émettent pas non plus de notification système, alors même qu'ils invoquent le vrai binaire : `scripts/run-tests.mjs` force `NODE_ENV=test`, et un test échoue si cette garantie disparaît. Les tests de notification injectent un notificateur factice et vérifient les appels.
+
 ## Limites connues de cette tranche
 
 - graphe limité à JavaScript/TypeScript et à l'analyse syntaxique locale des imports ;
@@ -201,4 +217,9 @@ Les tests d'intégration créent uniquement des dépôts temporaires et n'exécu
 - watcher par polling, sans optimisation pour les monorepos massifs ;
 - pas d'interface graphique, de diff interactif ou de lancement automatique de l'agent ;
 - pas de rollback ni d'exécution automatique d'une commande destructive ;
-- support agent explicite limité à Claude Code.
+- support agent explicite limité à Claude Code ;
+- notifications validées sous Windows uniquement ; le chemin macOS partage le même code et la même API mais n'a pas été exécuté sur machine ;
+- `node-notifier` n'a pas été publié depuis février 2022 et entraîne un avertissement `npm audit` *moderate* via `uuid@8`, non exploitable ici puisque seul `uuid.v4()` est appelé, sans argument `buf` ;
+- la bibliothèque embarque des binaires d'affichage (`snoretoast` sous Windows, `terminal-notifier` sous macOS) : rien à installer séparément, mais ce n'est pas du JavaScript pur ;
+- en mode hook, le titre exact d'avant la session ne peut pas être restauré — la pile de titres XTerm est hors allowlist — donc `SessionEnd` rend le nom du dépôt ;
+- si Claude Code se termine sans émettre `SessionEnd`, le titre reste sur la dernière alerte jusqu'au prochain `driftlight ack`.
