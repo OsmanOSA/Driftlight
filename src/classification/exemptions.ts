@@ -34,6 +34,11 @@ export function isDestructiveOperation(
   largeLineDeletionThreshold: number,
 ): boolean {
   if (input.change.kind === "deleted") return true;
+  // Écrire un fichier qui n'existe pas encore ne détruit rien. Sans cette
+  // borne, toute création comptait comme destruction : le veto sur les
+  // exemptions s'activait, et créer un fichier neuf — ce qu'un agent fait en
+  // permanence — allumait l'orange.
+  if (input.change.kind === "created") return false;
   if (input.operation?.kind === "write" || input.operation?.kind === "rename") return true;
   return (input.operation?.deletedLineCount ?? 0) >= largeLineDeletionThreshold;
 }
