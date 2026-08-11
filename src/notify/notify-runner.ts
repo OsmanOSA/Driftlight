@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { showWindowsToast } from "./windows-toast.js";
 
 /**
@@ -30,11 +31,17 @@ async function main(): Promise<void> {
   const raw = process.argv[2];
   if (!raw) return;
 
-  const payload = JSON.parse(raw) as { title?: string; message?: string; sound?: boolean };
+  const payload = JSON.parse(raw) as {
+    title?: string;
+    message?: string;
+    sound?: boolean;
+    icon?: string;
+  };
   const notification = {
     title: payload.title ?? "DriftLight",
     message: payload.message ?? "",
     sound: payload.sound ?? true,
+    ...(payload.icon !== undefined && existsSync(payload.icon) ? { icon: payload.icon } : {}),
   };
   if (process.platform === "win32") {
     await showWindowsToast(notification);

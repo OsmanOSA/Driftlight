@@ -6,6 +6,7 @@ import {
   isPlanTool,
   isReadLikeTool,
 } from "../../intent/agent-context.js";
+import { redactSensitiveText } from "../../shared/redact.js";
 
 interface NativeHookEvent extends Record<string, unknown> {
   session_id: string;
@@ -40,16 +41,7 @@ function boolean(value: unknown): boolean | undefined {
 }
 
 /** Minimise les secrets évidents avant la remise locale au Core. */
-export function redactSensitiveText(value: string): string {
-  return value
-    .replace(/\bAKIA[0-9A-Z]{16}\b/g, "[REDACTED_AWS_KEY]")
-    .replace(/\bsk-[A-Za-z0-9_-]{16,}\b/g, "[REDACTED_API_KEY]")
-    .replace(/\b(Bearer\s+)[A-Za-z0-9._~+\/-]+=*/gi, "$1[REDACTED]")
-    .replace(
-      /\b(api[_-]?key|token|secret|password|credential)\s*([:=])\s*("[^"]*"|'[^']*'|[^\s]+)/gi,
-      "$1$2[REDACTED]",
-    );
-}
+export { redactSensitiveText };
 
 function nativeMetadata(input: NativeHookEvent): Record<string, unknown> {
   return Object.fromEntries(Object.entries({

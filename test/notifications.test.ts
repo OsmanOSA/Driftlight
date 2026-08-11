@@ -18,6 +18,7 @@ import {
   SILENCE_WINDOW_MS,
   suppressedByCap,
 } from "../src/notify/notified-log.js";
+import { severityIconPath } from "../src/notify/icons.js";
 import { WINDOWS_TOAST_STARTUP_MS, windowsToastArguments } from "../src/notify/windows-toast.js";
 import { formatStopSummary } from "../src/ui/terminal.js";
 
@@ -89,22 +90,95 @@ const config = (overrides: Partial<DriftLightConfig> = {}): DriftLightConfig => 
 // --- Libellé dérivé de l'issue réelle du hook ---------------------------------
 
 test("the notification title states what actually happened, not the severity", () => {
-  const blocked = buildNotification(event("e1", "RED"), config(), true);
-  assert.equal(blocked.title, "DriftLight — action bloquée");
+  const root = path.join(os.tmpdir(), "boutique-en-ligne");
+  const blocked = buildNotification(root, event("e1", "RED"), config(), true);
+  assert.equal(blocked.title, "DriftLight · boutique-en-ligne — action bloquée");
   assert.doesNotMatch(blocked.message, /DriftLight (approve|reject)/);
 
-  const observed = buildNotification(event("e1", "RED"), config(), false);
-  assert.equal(
+  const observed = buildNotification(root, event("e1", "RED"), config(), false);
+  assert.doesNotMatch(
     observed.title,
-    "DriftLight — modification détectée",
+    /bloqu/,
     "claiming the action was blocked while the agent keeps working would be a lie",
   );
+  assert.match(observed.title, /alerte rouge/);
   assert.doesNotMatch(observed.message, /DriftLight approve/);
 
   for (const notification of [blocked, observed]) {
     assert.match(notification.message, /src\/secret\.ts/);
-    assert.match(notification.message, /cumulative-score/);
   }
+});
+
+/**
+ * L'installation est désormais valable pour toute la machine : une alerte qui
+ * ne nomme pas son dépôt oblige à deviner lequel des projets ouverts a bougé.
+ */
+test("the notification names the project it comes from", () => {
+  const notification = buildNotification(
+    path.join(os.tmpdir(), "api-facturation"),
+    event("e1", "RED"),
+    config(),
+    false,
+  );
+  assert.match(notification.title, /api-facturation/);
+});
+
+/**
+ * Un centre de notifications archive ce qu'il affiche. Une commande y laissant
+ * un jeton en clair le rendrait lisible longtemps après la fin de la session.
+ */
+test("a token carried by a command never reaches the notification centre", () => {
+  const notification = buildNotification(
+    "/repo",
+    event("e1", "RED", {
+      path: undefined,
+      detail: 'terraform destroy -var="token=sk-live-9f2ab77c41de88b0"',
+      ruleId: "infrastructure-command",
+      codes: ["infrastructure-command"],
+    }),
+    config(),
+    true,
+  );
+  assert.doesNotMatch(notification.message, /9f2ab77c41de88b0/);
+  assert.match(notification.message, /REDACTED/);
+});
+
+/** Le jargon appartient à `driftlight explain`, pas à un toast lu de biais. */
+test("the message carries the request instead of rule identifiers", () => {
+  const intent = {
+    schemaVersion: 1 as const,
+    version: 3,
+    turnId: "turn-1",
+    text: "Corrige la faute de frappe dans src/app.ts",
+    scopeAdditions: [],
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
+  const notification = buildNotification(
+    "/repo",
+    event("e1", "RED", { path: ".env", ruleId: "sensitive-file", codes: ["sensitive-file"] }),
+    config(),
+    true,
+    intent,
+  );
+  const lines = notification.message.split("\n");
+  assert.equal(lines[0], "Écriture dans un fichier de secrets : .env");
+  assert.match(lines[1] ?? "", /Vous aviez demandé.+Corrige la faute de frappe/);
+  assert.match(lines[2] ?? "", /Refusez/);
+  assert.doesNotMatch(notification.message, /sensitive-file/, "aucun identifiant technique");
+  assert.doesNotMatch(notification.message, /\(\^\|\//, "aucune expression régulière");
+});
+
+test("a long path keeps its end, and a missing request drops its line", () => {
+  const notification = buildNotification(
+    "/repo",
+    event("e1", "ORANGE", { path: "packages/services/billing/src/infrastructure/persistence/entity.ts" }),
+    config(),
+    false,
+  );
+  const lines = notification.message.split("\n");
+  assert.match(lines[0] ?? "", /entity\.ts$/, "la fin du chemin situe, son début non");
+  assert.ok(!notification.message.includes("«"), "pas de citation vide sans intention connue");
+  for (const line of lines) assert.ok(line.length <= 110, `ligne trop longue : ${line}`);
 });
 
 test("only the event the hook actually refused is announced as blocked", async (context) => {
@@ -120,8 +194,8 @@ test("only the event the hook actually refused is announced as blocked", async (
   });
 
   assert.equal(notifier.sent.length, 2);
-  assert.equal(notifier.sent[0]?.title, "DriftLight — action bloquée");
-  assert.equal(notifier.sent[1]?.title, "DriftLight — modification détectée");
+  assert.match(notifier.sent[0]?.title ?? "", /action bloquée$/);
+  assert.doesNotMatch(notifier.sent[1]?.title ?? "", /bloqu/);
 });
 
 // --- Garde d'environnement ----------------------------------------------------
@@ -290,7 +364,7 @@ test("a blocked action notifies again every time the agent proposes it anew", as
 
   assert.equal(notifier.sent.length, 3, "same path, same rule, three blocks, three notifications");
   assert.equal(
-    notifier.sent.every((notification) => notification.title === "DriftLight — action bloquée"),
+    notifier.sent.every((notification) => /action bloquée$/.test(notification.title)),
     true,
   );
 });
@@ -386,6 +460,36 @@ test("Windows toast uses argument arrays and a bounded startup window", () => {
     "Notification.Default",
   ]);
   assert.ok(WINDOWS_TOAST_STARTUP_MS < 1_000);
+});
+
+/**
+ * SnoreToast n'affiche rien du tout lorsque `-p` désigne un fichier absent.
+ * Perdre la couleur est acceptable ; perdre l'alerte ne l'est pas.
+ */
+test("a severity badge is attached only when the file really exists", () => {
+  const base: NativeNotification = { title: "t", message: "m", sound: false };
+  const real = severityIconPath("RED");
+  assert.ok(real, "les pastilles doivent être livrées avec le paquet");
+  assert.ok(windowsToastArguments({ ...base, icon: real }).includes("-p"));
+
+  const missing = windowsToastArguments({ ...base, icon: path.join(os.tmpdir(), "absente.png") });
+  assert.ok(!missing.includes("-p"), "un chemin mort ne doit jamais atteindre SnoreToast");
+  assert.ok(!windowsToastArguments(base).includes("-p"));
+});
+
+test("the severity badges shipped with the package are valid PNG files", async () => {
+  for (const level of ["RED", "ORANGE"] as const) {
+    const file = severityIconPath(level);
+    assert.ok(file, `pastille manquante pour ${level}`);
+    const header = await fs.readFile(file);
+    assert.deepEqual(
+      [...header.subarray(0, 8)],
+      [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+      "un PNG invalide supprimerait la notification au lieu de la décorer",
+    );
+    assert.equal(header.readUInt32BE(16), 128);
+  }
+  assert.equal(severityIconPath("GREEN"), undefined, "le vert ne notifie jamais");
 });
 
 test("orange does not notify under the default configuration", async (context) => {

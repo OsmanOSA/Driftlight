@@ -131,9 +131,12 @@ test("l'entrée Codex alimente intention, classifieur, statut, historique et not
   assert.equal(readCurrentIntentSync(root, "codex-thread-pipeline")?.turnId, "turn-drift");
   assert.equal(readCurrentStatusSync(root).level, "RED");
   assert.equal(notifications.length, 1);
-  assert.equal(notifications[0]?.title, "DriftLight — modification détectée");
+  assert.match(notifications[0]?.title ?? "", /^DriftLight · .+ — alerte rouge$/);
   assert.match(notifications[0]?.message ?? "", /protected\.txt/);
-  assert.match(notifications[0]?.message ?? "", /preexisting-file-deleted/);
+  // L'identifiant de règle reste sur l'événement, où `explain` le lit ; le
+  // toast, lui, dit le fait et rappelle la demande à laquelle le comparer.
+  assert.match(notifications[0]?.message ?? "", /travail non sauvegardé/);
+  assert.match(notifications[0]?.message ?? "", /Mets à jour README\.md/);
 
   const inbox = projectStatePath(root, "inbox", "codex");
   assert.ok((await fs.readdir(inbox)).length >= 7, "les enveloppes normalisées restent archivées localement");
@@ -207,6 +210,6 @@ test("Codex ignore le dry-run puis signale la commande réellement destructive",
   assert.equal(alert?.level, "RED");
   assert.equal(readCurrentStatusSync(root).level, "RED");
   assert.equal(notifications.length, 1);
-  assert.equal(notifications[0]?.title, "DriftLight — modification détectée");
+  assert.match(notifications[0]?.title ?? "", /^DriftLight · .+ — alerte rouge$/);
   assert.doesNotMatch(notifications[0]?.message ?? "", /DriftLight (approve|reject)/);
 });

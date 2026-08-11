@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import type { NativeNotification } from "./backend.js";
@@ -8,12 +9,21 @@ const require = createRequire(import.meta.url);
 /** Temps laissÃ© Ã  SnoreToast pour remettre le toast au centre de notifications. */
 export const WINDOWS_TOAST_STARTUP_MS = 750;
 
+/**
+ * SnoreToast n'affiche rien du tout si `-p` désigne un fichier absent. Le
+ * chemin est donc revérifié ici, au plus près de l'appel : perdre la couleur
+ * est acceptable, perdre l'alerte ne l'est pas.
+ */
 export function windowsToastArguments(notification: NativeNotification): string[] {
+  const icon = notification.icon !== undefined && existsSync(notification.icon)
+    ? ["-p", notification.icon]
+    : [];
   return [
     "-t",
     notification.title,
     "-m",
     notification.message,
+    ...icon,
     ...(notification.sound ? ["-s", "Notification.Default"] : ["-silent"]),
   ];
 }

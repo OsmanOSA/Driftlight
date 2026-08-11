@@ -21,6 +21,8 @@ export interface NativeNotification {
   title: string;
   message: string;
   sound: boolean;
+  /** Pastille de sévérité. Facultative : voir notify/icons.ts. */
+  icon?: string;
 }
 
 export interface NotifierBackend {

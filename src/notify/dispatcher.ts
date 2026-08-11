@@ -1,15 +1,9 @@
-import type { DriftLightConfig, SessionEvent, Severity } from "../domain/types.js";
+import type { CurrentIntentState, DriftLightConfig, SessionEvent, Severity } from "../domain/types.js";
+import { readCurrentIntentSync } from "../intent/current-intent.js";
 import { loadNativeBackend, type BackendLoader, type NativeNotification, type NotifierBackend } from "./backend.js";
+import { severityIconPath } from "./icons.js";
+import { notificationMessage, notificationTitle } from "./message.js";
 import { NotificationLedger, type ReservationOutcome } from "./notified-log.js";
-
-/**
- * Le titre décrit ce qui s'est réellement passé, pas ce que la sévérité laisse
- * supposer : un verdict rouge ne bloque que si `blockOnRed` est actif et que le
- * hook a effectivement renvoyé un refus. Annoncer « action bloquée » pendant que
- * l'agent poursuit son travail serait mensonger.
- */
-const BLOCKED_TITLE = "DriftLight — action bloquée";
-const OBSERVED_TITLE = "DriftLight — modification détectée";
 
 export type NotificationOutcome =
   | "sent"
@@ -60,17 +54,18 @@ export function notificationSubject(event: SessionEvent): string {
 }
 
 export function buildNotification(
+  root: string,
   event: SessionEvent,
   config: DriftLightConfig,
   blocked: boolean,
+  intent: CurrentIntentState | null = null,
 ): NativeNotification {
-  const subject = notificationSubject(event);
-  const rule = event.ruleId || event.codes[0] || "règle inconnue";
-  const reason = event.reasons[0];
+  const icon = severityIconPath(event.level);
   return {
-    title: blocked ? BLOCKED_TITLE : OBSERVED_TITLE,
-    message: reason ? `${subject}\n${rule} — ${reason}` : `${subject}\n${rule}`,
+    title: notificationTitle(root, event, blocked),
+    message: notificationMessage(root, event, intent),
     sound: config.notificationSound,
+    ...(icon ? { icon } : {}),
   };
 }
 
@@ -128,6 +123,15 @@ export async function dispatchNotifications(
 
     if (pending.length === 0) return decisions;
 
+    // La demande d'origine est ce qui rend l'alerte jugeable d'un coup d'œil.
+    // Son absence dégrade le texte sans jamais empêcher la notification.
+    let intent: CurrentIntentState | null = null;
+    try {
+      intent = readCurrentIntentSync(root, sessionId);
+    } catch {
+      intent = null;
+    }
+
     // Chargement tardif : aucun hook ne paie l'import tant qu'il n'y a rien à notifier.
     let backend: NotifierBackend | null = null;
     try {
@@ -142,7 +146,7 @@ export async function dispatchNotifications(
         continue;
       }
       try {
-        await backend.send(buildNotification(event, config, blocked.has(event.id)));
+        await backend.send(buildNotification(root, event, config, blocked.has(event.id), intent));
         decisions.push({ eventId: event.id, level: event.level, outcome: "sent" });
       } catch {
         decisions.push({ eventId: event.id, level: event.level, outcome: "backend-unavailable" });
