@@ -1,9 +1,10 @@
-import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { ImportGraph, ObservedChange, RepositorySnapshot } from "../domain/types.js";
 import { toPosixPath } from "../shared/paths.js";
+import { projectStatePath } from "../shared/state-paths.js";
+import { writeJsonAtomic } from "../shared/atomic-write.js";
 
 const SOURCE_EXTENSION = /\.(?:[cm]?[jt]sx?)$/i;
 const RESOLUTION_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
@@ -146,7 +147,7 @@ function resolveImport(
 }
 
 export function importGraphPath(root: string): string {
-  return path.join(root, ".driftlight", "import-graph.json");
+  return projectStatePath(root, "import-graph.json");
 }
 
 export function readImportGraphSync(root: string): ImportGraph | null {
@@ -159,11 +160,7 @@ export function readImportGraphSync(root: string): ImportGraph | null {
 }
 
 async function writeImportGraph(root: string, graph: ImportGraph): Promise<void> {
-  const target = importGraphPath(root);
-  await fs.mkdir(path.dirname(target), { recursive: true });
-  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
-  await fs.writeFile(temporary, `${JSON.stringify(graph, null, 2)}\n`, "utf8");
-  await fs.rename(temporary, target);
+  await writeJsonAtomic(importGraphPath(root), graph);
 }
 
 async function aliases(root: string, snapshot: RepositorySnapshot): Promise<TsConfigAliases[]> {

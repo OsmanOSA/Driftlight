@@ -1,7 +1,8 @@
-import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { AlertFeedback, SessionEvent } from "../domain/types.js";
+import { projectStatePath } from "../shared/state-paths.js";
+import { writeJsonAtomicSync } from "../shared/atomic-write.js";
 
 interface Counts { noise: number; useful: number }
 
@@ -22,7 +23,7 @@ function empty(): FeedbackStats {
 }
 
 export function feedbackStatsPath(root: string): string {
-  return path.join(root, ".driftlight", "feedback-stats.json");
+  return projectStatePath(root, "feedback-stats.json");
 }
 
 export function readFeedbackStats(root: string): FeedbackStats {
@@ -60,11 +61,7 @@ export function recordFeedbackStats(
     adjust(stageCounts, next, 1);
     for (const item of signalCounts) adjust(item, next, 1);
     state.updatedAt = new Date().toISOString();
-    const target = feedbackStatsPath(root);
-    mkdirSync(path.dirname(target), { recursive: true });
-    const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
-    writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, "utf8");
-    renameSync(temporary, target);
+    writeJsonAtomicSync(feedbackStatsPath(root), state);
   } catch {
     // Le feedback reste sur l'événement même si l'agrégat est indisponible.
   }

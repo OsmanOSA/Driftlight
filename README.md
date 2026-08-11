@@ -16,7 +16,11 @@ DriftLight est un voyant local qui compare la demande donnée à un coding agent
 - titre du terminal reflétant le statut, restauré en fin de session ;
 - aucun affichage pour les événements verts.
 
-DriftLight ignore son propre dossier `.driftlight/`, ainsi que les sorties volumineuses habituelles (`node_modules/`, `dist/`, `coverage/`, etc.). L'historique conserve des chemins, des métadonnées et des empreintes SHA-256, jamais le contenu des fichiers.
+DriftLight n'écrit rien dans les dépôts qu'il observe. L'état de chaque projet — sessions, intention courante, profil, graphe, journaux — vit sous `~/.driftlight/projects/<nom>-<empreinte>/`, hors du dépôt : rien n'apparaît dans votre `git status`, rien ne risque d'être commité par accident. Seul `.driftlight/config.json`, si vous en créez un, appartient au projet.
+
+L'inventaire des fichiers suit les règles de `.gitignore` du projet : les répertoires entièrement ignorés (`node_modules/`, `.venv/`, `vendor/`, `target/`…) sont élagués sans être parcourus. Les *fichiers* ignorés restent observés — `.env` l'est dans presque tous les projets, et c'est précisément ce qu'il faut protéger. L'historique conserve des chemins, des métadonnées et des empreintes SHA-256, jamais le contenu des fichiers.
+
+DriftLight n'observe qu'un dépôt Git. Hors dépôt, il reste entièrement silencieux et n'écrit rien.
 
 ## Prérequis et installation
 
@@ -41,7 +45,7 @@ Dans un dépôt Git de test, ouvrez un premier terminal :
 node D:/Driftlight/dist/src/cli.js start --task "Fix the typo in README" --cwd D:/mon-projet
 ```
 
-Dans un second terminal, modifiez successivement une dépendance directe du fichier nommé dans la tâche, un fichier JS/TS non connecté, puis un fichier correspondant à un motif sensible du profil. DriftLight affiche un signal concis et écrit la session sous `D:/mon-projet/.driftlight/sessions/`. Arrêtez proprement avec `Ctrl+C`.
+Dans un second terminal, modifiez successivement une dépendance directe du fichier nommé dans la tâche, un fichier JS/TS non connecté, puis un fichier correspondant à un motif sensible du profil. DriftLight affiche un signal concis et écrit la session sous `~/.driftlight/projects/mon-projet-<empreinte>/sessions/`. Arrêtez proprement avec `Ctrl+C`.
 
 Exemples de lecture et d'acquittement :
 
@@ -67,17 +71,30 @@ Installez les hooks dans le dépôt à observer :
 node D:/Driftlight/dist/src/cli.js claude install --cwd D:/mon-projet
 ```
 
+Ou une seule fois pour toute la machine, ce qui couvre aussi les dépôts que vous
+n'avez pas encore créés :
+
+```bash
+node D:/Driftlight/dist/src/cli.js claude install --global
+```
+
+L'installation globale écrit dans `~/.claude/settings.json`. Ouvrir n'importe quel
+dépôt Git suffit alors à être observé, sans installation par projet.
+
 L'installation fusionne les entrées dans `.claude/settings.local.json` sans remplacer les hooks existants. Vérifiez-les avec `/hooks` dans Claude Code.
 
 Le hook `PreToolUse` classe les écritures et commandes proposées. Sur rouge, il renvoie `permissionDecision: "ask"` : Claude Code suspend l'action dans son dialogue de permission jusqu'à la réponse de l'utilisateur. L'orange est seulement journalisé par défaut. `PostToolUse` enregistre aussi les fichiers lus par l'agent, puis `PostToolUse` et `FileChanged` mettent l'historique à jour à partir de l'état réel du disque. Le hook `Stop` affiche uniquement les alertes orange et rouges du tour qui se termine.
 
 Les hooks joignent par ailleurs un champ `terminalSequence` à leur réponse pour le titre du terminal (voir plus bas). Ce champ est purement additif : il ne retient jamais une action, et une version de Claude Code qui ne le connaîtrait pas l'ignore sans conséquence.
 
-Chaque `UserPromptSubmit` écrit atomiquement `.driftlight/current-intent.json`. Le classifieur relit directement ce fichier au moment de chaque décision, sans propagation entre processus. Un fichier explicitement nommé est donc exempté, y compris s'il est sensible.
+Chaque `UserPromptSubmit` écrit atomiquement `current-intent.json`. Le classifieur relit directement ce fichier au moment de chaque décision, sans propagation entre processus. Un fichier explicitement nommé est donc exempté, y compris s'il est sensible.
 
 La protection absolue du travail Git préexistant ne signale pas une édition ordinaire. Elle exige simultanément une baseline non commitée, un fichier hors intention et une suppression ou réécriture intégrale. Le verdict est alors toujours ROUGE, même si le fichier a été lu ou cité dans le plan de l'agent. Une seule alerte absolue est conservée par fichier et par tour.
 
-La configuration locale facultative se trouve dans `.driftlight/config.json` :
+La configuration s'empile sur trois niveaux : les défauts du produit, puis
+`~/.driftlight/config.json` pour la machine, puis `.driftlight/config.json` dans
+le dépôt, qui a le dernier mot. Une installation unique se règle donc une fois,
+sans empêcher un projet de diverger :
 
 ```json
 {
@@ -107,7 +124,7 @@ La configuration locale facultative se trouve dans `.driftlight/config.json` :
 
 ## Intégration Codex globale
 
-L'adapter Codex transforme les hooks natifs Codex en protocole DriftLight versionné puis les remet au même pipeline Core que les autres agents : session, intention courante, classification, statut, historique et notifications natives. L'adapter ne classe pas, ne modifie pas les entrées d'outil et n'ouvre aucun port réseau. `.driftlight/inbox/codex/` conserve en plus les enveloppes normalisées minimales pour le diagnostic local.
+L'adapter Codex transforme les hooks natifs Codex en protocole DriftLight versionné puis les remet au même pipeline Core que les autres agents : session, intention courante, classification, statut, historique et notifications natives. L'adapter ne classe pas, ne modifie pas les entrées d'outil et n'ouvre aucun port réseau. `inbox/codex/` conserve en plus les enveloppes normalisées minimales pour le diagnostic local.
 
 Après le build, connectez Codex une seule fois :
 
@@ -168,12 +185,12 @@ node D:\Driftlight\dist\src\cli.js codex disconnect
 4. Lancez une nouvelle session Codex.
 5. Ouvrez `/hooks`, contrôlez la commande DriftLight et approuvez-la.
 6. Soumettez `Create a file called scopelight-test.txt`.
-7. Vérifiez que `.driftlight/current-intent.json` contient le tour courant et qu'un fichier JSON `USER_PROMPT` apparaît dans `<workspace>/.driftlight/inbox/codex/`.
-8. Vérifiez les messages `TOOL_PROPOSED` puis `FILE_EDITED` lorsque Codex utilise `apply_patch`, ainsi que la session `codex-<session-id>.json` dans `.driftlight/sessions/`.
+7. Vérifiez que `current-intent.json` contient le tour courant et qu'un fichier JSON `USER_PROMPT` apparaît dans `inbox/codex/` de l'état du projet.
+8. Vérifiez les messages `TOOL_PROPOSED` puis `FILE_EDITED` lorsque Codex utilise `apply_patch`, ainsi que la session `codex-<session-id>.json` dans `sessions/`.
 9. Laissez le tour se terminer.
 10. Vérifiez la présence de `AGENT_STOPPED`.
 11. Ouvrez un autre repository et lancez une nouvelle session Codex.
-12. Vérifiez que sa propre boîte `.driftlight/inbox/codex/` reçoit les événements sans réinstallation.
+12. Vérifiez que sa propre boîte `inbox/codex/` reçoit les événements sans réinstallation.
 
 Le bridge remet au Core le prompt courant et les commandes proposées parce qu'ils sont nécessaires à la classification, après masquage des formats de secrets évidents. `PreToolUse/apply_patch` est classifié avant l'action ; `PostToolUse` déclenche ensuite la réconciliation réelle du filesystem. Le bridge ne persiste ni transcript, ni message assistant complet, ni output d'outil complet. Un payload invalide, un Core indisponible ou une erreur d'écriture conduit toujours à une sortie réussie du hook afin que Codex continue normalement.
 
@@ -198,7 +215,7 @@ Sous Claude Code, `blockOnRed` pilote le dialogue de confirmation existant. Sous
 
 ### Anti-bruit
 
-Le registre `.driftlight/notified-events.json` est persisté, car chaque hook s'exécute dans un processus neuf : toute déduplication en mémoire serait perdue d'un événement au suivant. Trois garde-fous s'appliquent dans l'ordre :
+Le registre `notified-events.json` est persisté, car chaque hook s'exécute dans un processus neuf : toute déduplication en mémoire serait perdue d'un événement au suivant. Trois garde-fous s'appliquent dans l'ordre :
 
 1. un `eventId` ne notifie **jamais** deux fois ;
 2. un même couple **chemin + règle** reste silencieux pendant **10 minutes** ;
@@ -232,14 +249,14 @@ Deux chemins d'émission, parce que les contraintes diffèrent.
 
 `terminalTitle: false` désactive complètement la fonction.
 
-Le fichier `.driftlight/current-status.json` contient le niveau maximal depuis le dernier `ack`, les compteurs `GREEN`, `ORANGE` et `RED`, ainsi que l'horodatage du dernier événement. Il ne contient ni code, ni prompt, ni diff.
+Le fichier `current-status.json` contient le niveau maximal depuis le dernier `ack`, les compteurs `GREEN`, `ORANGE` et `RED`, ainsi que l'horodatage du dernier événement. Il ne contient ni code, ni prompt, ni diff.
 
 ## Profil du dépôt et graphe d'import
 
 Au démarrage d'une session, DriftLight prépare :
 
-- `.driftlight/repo-profile.json` : nombre de commits, taux de modification et cooccurrences, calculés par un worker en arrière-plan et mis en cache par HEAD ;
-- `.driftlight/import-graph.json` : imports statiques et dynamiques JavaScript/TypeScript, avec résolution relative et alias `tsconfig.paths`.
+- `repo-profile.json` : nombre de commits, taux de modification et cooccurrences, calculés par un worker en arrière-plan et mis en cache par HEAD ;
+- `import-graph.json` : imports statiques et dynamiques JavaScript/TypeScript, avec résolution relative et alias `tsconfig.paths`.
 
 Le graphe invalide seulement les arêtes des sources modifiées ; une création, suppression ou modification de `tsconfig` reconstruit sa topologie. Il reste indisponible sous 20 fichiers JS/TS. Le taux de modification est indisponible sous 50 commits et la cooccurrence sous 100 commits. Ces seuils sont configurés dans `driftlight.scoring.json`.
 
@@ -262,7 +279,7 @@ Le `shadowScore` ne contient que `importDistance`, `fileRarity` et `anchorCooccu
 
 Les commandes sont analysées hors corps de heredoc/here-string. Les dry-runs, `git checkout` de branche et commandes d'aide restent silencieux ; seules les formes réellement mutatrices sont signalées.
 
-`driftlight mark <eventId> --noise|--useful` alimente `.driftlight/feedback-stats.json`, avec des compteurs persistants par étage et par signal. La spécification détaillée est dans [`docs/classification-v2.md`](docs/classification-v2.md).
+`driftlight mark <eventId> --noise|--useful` alimente `feedback-stats.json`, avec des compteurs persistants par étage et par signal. La spécification détaillée est dans [`docs/classification-v2.md`](docs/classification-v2.md).
 
 ## Architecture
 

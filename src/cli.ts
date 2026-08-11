@@ -20,6 +20,7 @@ import {
   resolveSessionStore,
 } from "./session/service.js";
 import { SessionStore } from "./session/store.js";
+import { driftlightHome } from "./shared/state-paths.js";
 import { acknowledgeCurrentStatus } from "./status/current-status.js";
 import { formatScoreExplanation, formatSessionSummary, formatSignal } from "./ui/terminal.js";
 import { applyTerminalTitle, pushTerminalTitle, restoreTerminalTitle } from "./ui/terminal-title.js";
@@ -54,13 +55,16 @@ Commandes :
   driftlight mark-expected <event-id> [--session latest] [--cwd .]
   driftlight add-scope "Nouvelle instruction ou chemin" [--session latest] [--cwd .]
   driftlight ack [--cwd .]
-  driftlight claude install [--cwd .]
+  driftlight claude install [--global] [--cwd .]
   driftlight codex connect
   driftlight codex disconnect
   driftlight codex status
   driftlight hook                       # appelé par Claude Code via stdin JSON
 
-Tout reste local dans .driftlight/. Les alertes rouges demandent confirmation ; aucun rollback n'est exécuté.`;
+Tout reste local, sur cette machine uniquement. L'état par projet est rangé sous
+${path.join(driftlightHome(), "projects")} et n'écrit rien dans les dépôts observés ;
+seul .driftlight/config.json, si vous en créez un, appartient au projet.
+Les alertes rouges demandent confirmation ; aucun rollback n'est exécuté.`;
 }
 
 async function readStdin(): Promise<string> {
@@ -202,10 +206,18 @@ async function runAck(args: string[]): Promise<void> {
 }
 
 async function runClaude(args: string[]): Promise<void> {
-  if (args[1] !== "install") throw new Error("Commande attendue : driftlight claude install");
+  if (args[1] !== "install") throw new Error("Commande attendue : driftlight claude install [--global]");
   const cwd = path.resolve(option(args, "--cwd") ?? process.cwd());
-  const settingsPath = await installClaudeHooks({ cwd });
+  const global = args.includes("--global");
+  const settingsPath = await installClaudeHooks({ cwd, global });
   console.log(`✓ Hooks Claude Code installés sans remplacer les hooks existants : ${settingsPath}`);
+  if (global) {
+    console.log("  Portée : tous les dépôts Git ouverts sur cette machine, y compris les prochains.");
+    console.log(`  État par projet : ${path.join(driftlightHome(), "projects")}`);
+    console.log("  Hors dépôt Git, DriftLight reste entièrement silencieux.");
+  } else {
+    console.log("  Portée : ce dépôt seulement. Utilisez --global pour couvrir toute la machine.");
+  }
   console.log(`  Les verdicts rouges demanderont confirmation avant l'action (configuration locale modifiable).`);
 }
 

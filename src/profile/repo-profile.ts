@@ -1,12 +1,13 @@
 import { execFileSync } from "node:child_process";
 import { spawn } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RepoProfile, RepositorySnapshot, ScoringConfig } from "../domain/types.js";
 import { toPosixPath } from "../shared/paths.js";
+import { projectStatePath } from "../shared/state-paths.js";
+import { writeJsonAtomic } from "../shared/atomic-write.js";
 
 function gitText(root: string, args: string[], maxBuffer = 100 * 1024 * 1024): string | null {
   try {
@@ -89,7 +90,7 @@ export function readGitignorePatterns(root: string): string[] {
 }
 
 export function repoProfilePath(root: string): string {
-  return path.join(root, ".driftlight", "repo-profile.json");
+  return projectStatePath(root, "repo-profile.json");
 }
 
 export function readRepoProfileSync(root: string): RepoProfile | null {
@@ -187,11 +188,7 @@ export async function buildRepoProfile(
     if (sources.length > 0) profile.sensitivity.files[filePath] = sources;
   }
 
-  const target = repoProfilePath(root);
-  await fs.mkdir(path.dirname(target), { recursive: true });
-  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
-  await fs.writeFile(temporary, `${JSON.stringify(profile, null, 2)}\n`, "utf8");
-  await fs.rename(temporary, target);
+  await writeJsonAtomic(repoProfilePath(root), profile);
   return profile;
 }
 

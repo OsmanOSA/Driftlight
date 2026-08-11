@@ -1,8 +1,8 @@
-import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { promises as fs } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { CurrentStatus, SessionEvent, Severity } from "../domain/types.js";
+import { projectStateDirectory, projectStatePath } from "../shared/state-paths.js";
+import { writeJsonAtomic, writeJsonAtomicSync } from "../shared/atomic-write.js";
 
 const ORDER: Record<Severity, number> = { GREEN: 0, ORANGE: 1, RED: 2 };
 
@@ -17,7 +17,7 @@ function emptyStatus(acknowledgedAt: string | null = null): CurrentStatus {
 }
 
 export function currentStatusPath(root: string): string {
-  return path.join(root, ".driftlight", "current-status.json");
+  return projectStatePath(root, "current-status.json");
 }
 
 export function readCurrentStatusSync(root: string): CurrentStatus {
@@ -30,12 +30,7 @@ export function readCurrentStatusSync(root: string): CurrentStatus {
 }
 
 function saveStatusSync(root: string, status: CurrentStatus): void {
-  const directory = path.join(root, ".driftlight");
-  const target = currentStatusPath(root);
-  mkdirSync(directory, { recursive: true });
-  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(status, null, 2)}\n`, "utf8");
-  renameSync(temporary, target);
+  writeJsonAtomicSync(currentStatusPath(root), status);
 }
 
 export function recordCurrentStatus(root: string, events: SessionEvent[]): CurrentStatus {
@@ -52,9 +47,6 @@ export function recordCurrentStatus(root: string, events: SessionEvent[]): Curre
 
 export async function acknowledgeCurrentStatus(root: string): Promise<CurrentStatus> {
   const status = emptyStatus(new Date().toISOString());
-  await fs.mkdir(path.dirname(currentStatusPath(root)), { recursive: true });
-  const temporary = `${currentStatusPath(root)}.${process.pid}.${randomUUID()}.tmp`;
-  await fs.writeFile(temporary, `${JSON.stringify(status, null, 2)}\n`, "utf8");
-  await fs.rename(temporary, currentStatusPath(root));
+  await writeJsonAtomic(currentStatusPath(root), status);
   return status;
 }

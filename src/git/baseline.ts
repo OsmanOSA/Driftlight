@@ -70,6 +70,19 @@ export async function resolveGitRoot(cwd: string): Promise<string> {
   return path.resolve(root || cwd);
 }
 
+/**
+ * Périmètre observable, ou `null` hors dépôt Git.
+ *
+ * En mode global les hooks se déclenchent partout, y compris dans un dossier
+ * quelconque du disque. Sans dépôt, DriftLight n'a ni baseline, ni protection
+ * du travail préexistant, ni frontière : retomber sur `cwd` reviendrait à
+ * parcourir et hacher un répertoire personnel entier à chaque appel d'outil.
+ */
+export async function resolveObservableRoot(cwd: string): Promise<string | null> {
+  const root = await gitText(cwd, ["rev-parse", "--show-toplevel"]);
+  return root ? path.resolve(root) : null;
+}
+
 export async function captureGitBaseline(cwd: string): Promise<GitBaseline> {
   const rootText = await gitText(cwd, ["rev-parse", "--show-toplevel"]);
   const fallbackRoot = path.resolve(cwd);

@@ -1,6 +1,7 @@
-import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
+import { projectStatePath } from "../shared/state-paths.js";
+import { writeJsonAtomicSync } from "../shared/atomic-write.js";
 
 /**
  * Registre des notifications déjà émises.
@@ -74,7 +75,7 @@ function emptyState(): LedgerState {
 }
 
 export function notifiedLogPath(root: string): string {
-  return path.join(root, ".driftlight", "notified-events.json");
+  return projectStatePath(root, "notified-events.json");
 }
 
 function isEntry(value: unknown): value is LedgerEntry {
@@ -105,12 +106,8 @@ export function readLedger(root: string): LedgerState {
 }
 
 function writeLedger(root: string, state: LedgerState): void {
-  const target = notifiedLogPath(root);
-  mkdirSync(path.dirname(target), { recursive: true });
   const bounded: LedgerState = { ...state, entries: state.entries.slice(-RETAINED_ENTRIES) };
-  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(bounded, null, 2)}\n`, "utf8");
-  renameSync(temporary, target);
+  writeJsonAtomicSync(notifiedLogPath(root), bounded);
 }
 
 /** Nombre d'alertes tues par le plafond pour la session en cours. */

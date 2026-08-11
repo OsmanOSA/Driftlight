@@ -4,7 +4,7 @@ import { DeterministicClassifier } from "../classification/deterministic-classif
 import { classifyCommand } from "../classification/rules.js";
 import { loadConfigSync } from "../config/config.js";
 import type { ChangeKind, Classifier, SessionEvent, SessionRecord } from "../domain/types.js";
-import { resolveGitRoot } from "../git/baseline.js";
+import { resolveGitRoot, resolveObservableRoot } from "../git/baseline.js";
 import { readCurrentIntentSync, writeCurrentIntent } from "../intent/current-intent.js";
 import { isReadLikeTool } from "../intent/agent-context.js";
 import { dispatchNotifications } from "../notify/dispatcher.js";
@@ -241,6 +241,8 @@ export class NormalizedEventProcessor {
 
   public async process(event: ScopeLightEvent): Promise<void> {
     if (event.protocol_version !== 1) return;
+    // Même garde-fou que côté Claude Code : sans dépôt Git, pas de périmètre.
+    if (await resolveObservableRoot(event.workspace) === null) return;
     switch (event.event) {
       case "SESSION_STARTED":
         await this.sessionStarted(event);

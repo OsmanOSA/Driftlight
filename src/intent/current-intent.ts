@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { CurrentIntentState } from "../domain/types.js";
+import { projectStatePath } from "../shared/state-paths.js";
+import { writeJsonAtomic } from "../shared/atomic-write.js";
 
 export function currentIntentPath(root: string): string {
-  return path.join(root, ".driftlight", "current-intent.json");
+  return projectStatePath(root, "current-intent.json");
 }
 
 export function readCurrentIntentSync(root: string): CurrentIntentState | null {
@@ -18,11 +19,7 @@ export function readCurrentIntentSync(root: string): CurrentIntentState | null {
 }
 
 async function saveCurrentIntent(root: string, state: CurrentIntentState): Promise<CurrentIntentState> {
-  const target = currentIntentPath(root);
-  await fs.mkdir(path.dirname(target), { recursive: true });
-  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
-  await fs.writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, "utf8");
-  await fs.rename(temporary, target);
+  await writeJsonAtomic(currentIntentPath(root), state);
   return state;
 }
 

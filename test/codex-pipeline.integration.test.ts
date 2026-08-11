@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { projectStatePath } from "../src/shared/state-paths.js";
 import test from "node:test";
 import { CodexAdapter } from "../src/adapters/codex/adapter.js";
 import { runCodexHookBridge, type HookBridgeResult } from "../src/adapters/codex/hook-bridge.js";
@@ -134,7 +135,7 @@ test("l'entrée Codex alimente intention, classifieur, statut, historique et not
   assert.match(notifications[0]?.message ?? "", /protected\.txt/);
   assert.match(notifications[0]?.message ?? "", /preexisting-file-deleted/);
 
-  const inbox = path.join(root, ".driftlight", "inbox", "codex");
+  const inbox = projectStatePath(root, "inbox", "codex");
   assert.ok((await fs.readdir(inbox)).length >= 7, "les enveloppes normalisées restent archivées localement");
 });
 

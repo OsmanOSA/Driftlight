@@ -40,6 +40,14 @@ async function setup(context: test.TestContext): Promise<string> {
   await fs.writeFile(path.join(root, "src", "anchor.ts"), 'import { direct } from "./direct";\nexport const anchor = direct;\n');
   await fs.writeFile(path.join(root, "src", "direct.ts"), "export const direct = 1;\n");
   await fs.writeFile(path.join(root, "src", "unconnected.ts"), "export const unconnected = 1;\n");
+  // DriftLight n'observe qu'un dépôt Git. L'arbre est commité pour que la
+  // baseline soit propre : ces tests portent sur les hooks, pas sur la
+  // protection du travail préexistant.
+  git(root, ["init"]);
+  git(root, ["config", "user.email", "driftlight@example.test"]);
+  git(root, ["config", "user.name", "DriftLight Test"]);
+  git(root, ["add", "."]);
+  git(root, ["commit", "-m", "initial"]);
   assertDoesNotBlock(await handleClaudeHook(hook(root, "SessionStart", { source: "startup" })));
   return root;
 }
@@ -151,6 +159,7 @@ test("blocking behavior follows local blockOnRed and blockOnOrange settings", as
     prompt: "Fix src/anchor.ts",
     prompt_id: "turn-config",
   }));
+  await fs.mkdir(path.join(root, ".driftlight"), { recursive: true });
   await fs.writeFile(path.join(root, ".driftlight", "config.json"), JSON.stringify({
     blockOnRed: false,
     blockOnOrange: true,

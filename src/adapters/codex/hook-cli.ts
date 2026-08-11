@@ -2,6 +2,8 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { runCodexHookBridge } from "./hook-bridge.js";
+import { projectStateDirectory } from "../../shared/state-paths.js";
+import { writeJsonAtomic } from "../../shared/atomic-write.js";
 
 async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];
@@ -42,24 +44,21 @@ async function writeHealthTrace(
 ): Promise<void> {
   const envelope = diagnosticEnvelope(rawInput);
   if (!envelope) return;
-  const directory = path.join(envelope.cwd, ".driftlight");
+  const directory = projectStateDirectory(envelope.cwd);
   const target = path.join(directory, "codex-hook-health.json");
-  const temporary = `${target}.${process.pid}.tmp`;
   const status = statusOverride ?? (diagnosticMessage
     ? "FAILED_OPEN"
     : delivered > 0
       ? "DELIVERED"
       : "IGNORED");
-  await fs.mkdir(directory, { recursive: true });
-  await fs.writeFile(temporary, `${JSON.stringify({
+  await writeJsonAtomic(target, {
     schemaVersion: 1,
     eventName: envelope.hook_event_name,
     receivedAt: new Date().toISOString(),
     delivered,
     status,
     ...(diagnosticMessage ? { diagnostic: diagnosticMessage } : {}),
-  }, null, 2)}\n`, "utf8");
-  await fs.rename(temporary, target);
+  });
 }
 
 async function main(): Promise<void> {

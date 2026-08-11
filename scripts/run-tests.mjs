@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { readdir } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 const sourceDirectory = path.resolve("test");
@@ -18,9 +19,16 @@ if (files.length === 0) {
   // NODE_ENV=test coupe les notifications système à la racine : les tests
   // d'intégration invoquent le vrai binaire et ne doivent jamais faire surgir
   // de toast sur la machine qui exécute la suite.
-  const result = spawnSync(process.execPath, ["--test", ...files], {
-    stdio: "inherit",
-    env: { ...process.env, NODE_ENV: "test" },
-  });
-  process.exitCode = result.status ?? 1;
+  // L'état DriftLight vit désormais hors des dépôts observés. Sans ce
+  // redirigement, la suite écrirait son historique dans le vrai ~/.driftlight.
+  const stateHome = await mkdtemp(path.join(os.tmpdir(), "driftlight-test-home-"));
+  try {
+    const result = spawnSync(process.execPath, ["--test", ...files], {
+      stdio: "inherit",
+      env: { ...process.env, NODE_ENV: "test", DRIFTLIGHT_HOME: stateHome },
+    });
+    process.exitCode = result.status ?? 1;
+  } finally {
+    await rm(stateHome, { recursive: true, force: true });
+  }
 }

@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import { changeFromAbsolutePath, classifyCommand } from "../classification/rules.js";
 import type { ClaudeHookInput, SessionEvent, SessionRecord } from "../domain/types.js";
 import { loadConfigSync } from "../config/config.js";
-import { captureGitBaseline } from "../git/baseline.js";
+import { captureGitBaseline, resolveObservableRoot } from "../git/baseline.js";
 import { readCurrentIntentSync, writeCurrentIntent } from "../intent/current-intent.js";
 import {
   extractDeclaredPlanPaths,
@@ -145,6 +145,10 @@ async function ensureSession(input: ClaudeHookInput): Promise<{ store: SessionSt
 
 export async function handleClaudeHook(input: ClaudeHookInput): Promise<ClaudeHookOutput | undefined> {
   if (!input.session_id || !input.cwd || !input.hook_event_name) return undefined;
+  // Installé globalement, le hook se déclenche dans tous les projets ouverts.
+  // Hors dépôt Git, DriftLight se tait entièrement plutôt que d'observer un
+  // périmètre qu'il ne sait pas délimiter.
+  if (await resolveObservableRoot(input.cwd) === null) return undefined;
 
   if (input.hook_event_name === "SessionStart") {
     const context = await sessionContext(input);
