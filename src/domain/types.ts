@@ -92,6 +92,12 @@ export interface ScoreBreakdown {
   decisionRuleId?: string;
   /** Familles actives après déduplication des signaux corrélés. */
   activeSignalFamilies?: string[];
+  /**
+   * Signaux neutralisés par le feedback accumulé sur ce répertoire. Présent dès
+   * qu'un apprentissage a joué : une alerte tue en silence serait impossible à
+   * distinguer d'une absence de signal.
+   */
+  learnedSuppressions?: string[];
 }
 
 /** Étage ayant rendu le verdict. Le premier qui décide arrête l'évaluation. */

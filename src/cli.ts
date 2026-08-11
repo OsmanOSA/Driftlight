@@ -1,7 +1,17 @@
 #!/usr/bin/env node
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { rm } from "node:fs/promises";
 import { CodexAdapter } from "./adapters/codex/adapter.js";
+import {
+  describeSuppression,
+  learnedSuppressions,
+  LEARNING_MINIMUM_FILES,
+  LEARNING_MINIMUM_SAMPLE,
+  LEARNING_NOISE_RATIO,
+} from "./classification/adaptation.js";
+import { feedbackStatsPath, readFeedbackStats } from "./classification/feedback-stats.js";
+import { loadScoringConfigSync } from "./config/scoring-config.js";
 import { runHookSafely, type SafeHookOutcome } from "./claude/safe-hook.js";
 import { installClaudeHooks, isInstalledPackage } from "./claude/installer.js";
 import type { ClaudeHookInput, SessionRecord } from "./domain/types.js";
@@ -64,6 +74,7 @@ Commandes :
   driftlight codex status
   driftlight projects [--purge]        # état de tous les projets de la machine
   driftlight doctor [--cwd .]          # diagnostic de l'installation
+  driftlight learning [--reset] [--cwd .]  # ce que DriftLight a appris de vos retours
   driftlight hook                       # appelé par Claude Code via stdin JSON
 
 Tout reste local, sur cette machine uniquement. L'état par projet est rangé sous
@@ -356,6 +367,32 @@ async function runDoctor(args: string[]): Promise<void> {
   console.log(formatChecks(await diagnose(cwd)));
 }
 
+async function runLearning(args: string[]): Promise<void> {
+  const cwd = path.resolve(option(args, "--cwd") ?? process.cwd());
+  const root = await resolveObservableRoot(cwd);
+  if (root === null) throw new Error("Aucun dépôt Git observable ici.");
+  if (args.includes("--reset")) {
+    await rm(feedbackStatsPath(root), { force: true });
+    console.log("✓ Apprentissage réinitialisé : DriftLight repart de sa calibration d'origine.");
+    return;
+  }
+
+  const stats = readFeedbackStats(root);
+  const learned = learnedSuppressions(stats, loadScoringConfigSync(root));
+  console.log(
+    `DriftLight · apprentissage local — ${stats.totals.noise} bruit / ${stats.totals.useful} utile qualifiés.`,
+  );
+  if (learned.length === 0) {
+    console.log(
+      `Aucun signal neutralisé pour l'instant : il faut ${LEARNING_MINIMUM_SAMPLE} qualifications`
+      + ` sur ${LEARNING_MINIMUM_FILES} fichiers d'un même répertoire, dont`
+      + ` ${Math.round(LEARNING_NOISE_RATIO * 100)} % de bruit.`,
+    );
+  }
+  for (const item of learned) console.log(`  · ${describeSuppression(item)}`);
+  console.log("\nLes signaux rouges ne sont jamais neutralisables. `--reset` annule tout.");
+}
+
 async function runHook(): Promise<void> {
   const raw = await readStdin();
   const outcome = await runHookSafely(raw);
@@ -381,6 +418,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     case "codex": await runCodex(args); break;
     case "projects": await runProjects(args); break;
     case "doctor": await runDoctor(args); break;
+    case "learning": await runLearning(args); break;
     case "hook": await runHook(); break;
     case "help":
     case "--help":

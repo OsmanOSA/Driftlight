@@ -5,6 +5,8 @@ import { readCurrentIntentSync } from "../intent/current-intent.js";
 import { readImportGraphSync } from "../profile/import-graph.js";
 import { readRepoProfileSync } from "../profile/repo-profile.js";
 import { absoluteScoreBreakdown, scoreClassification } from "./scoring-engine.js";
+import { applyLearnedSuppressions, describeSuppression, learnedSuppressions } from "./adaptation.js";
+import { readFeedbackStats } from "./feedback-stats.js";
 import {
   behaviorScoreBreakdown,
   evaluateBehaviorDecision,
@@ -92,7 +94,7 @@ export class DeterministicClassifier implements Classifier {
     }
 
     // Étage 2 — seuls faits observables autorisés à alerter par défaut.
-    const findings = evaluateBehaviorSignals(
+    const observedFindings = evaluateBehaviorSignals(
       input,
       {
         profile,
@@ -101,6 +103,16 @@ export class DeterministicClassifier implements Classifier {
         largeLineDeletionThreshold: config.largeLineDeletionThreshold,
       },
       scoringConfig,
+    );
+
+    // Apprentissage — il n'intervient qu'ici, après l'étage 0 et l'étage 1, et
+    // ne peut donc ni rendre un secret acceptable ni autoriser la destruction
+    // de travail non commité. Voir adaptation.ts pour les garde-fous.
+    const { findings, suppressed } = applyLearnedSuppressions(
+      observedFindings,
+      input.root,
+      input.change.path,
+      learnedSuppressions(readFeedbackStats(input.root), scoringConfig),
     );
     const behaviorDecision = evaluateBehaviorDecision(findings, scoringConfig);
     const behaviorLevel = behaviorDecision.verdict;
@@ -121,12 +133,19 @@ export class DeterministicClassifier implements Classifier {
         ? [`shadowScore promu par configuration : ${shadowScore.score}/${scoringConfig.maximumScore}.`]
         : activeFindings.length > 0
           ? activeFindings.map((finding) => finding.reason)
-          : ["Aucun signal de comportement déclenché."],
+          : suppressed.length > 0
+            ? [`Signaux neutralisés par apprentissage : ${suppressed.map(describeSuppression).join(" ; ")}.`]
+            : ["Aucun signal de comportement déclenché."],
       codes: shadowPromoted ? ["shadow-score"] : activeFindings.map((finding) => finding.id),
       ruleId,
       scoreBreakdown: shadowPromoted
         ? shadowScore
-        : behaviorScoreBreakdown(findings, behaviorDecision, scoringConfig),
+        : {
+          ...behaviorScoreBreakdown(findings, behaviorDecision, scoringConfig),
+          ...(suppressed.length > 0
+            ? { learnedSuppressions: suppressed.map(describeSuppression) }
+            : {}),
+        },
       stage: shadowPromoted ? "shadow" : "behavior",
       shadowScore,
       ...identity,
