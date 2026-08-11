@@ -8,7 +8,7 @@ import type {
   ScoringConfig,
   Severity,
 } from "../domain/types.js";
-import { toPosixPath } from "../shared/paths.js";
+import { isInsideRoot, toPosixPath } from "../shared/paths.js";
 
 export type ProtectionEvaluationInput = ClassificationInput & {
   task: string;
@@ -144,6 +144,26 @@ function severityFor(config: ScoringConfig, id: string): Severity {
   return config.behavior.severities[id] ?? "GREEN";
 }
 
+/**
+ * Une suppression ne concerne DriftLight que si elle peut atteindre le dépôt
+ * observé. Effacer un dossier temporaire hors périmètre est du bruit pur.
+ *
+ * Prudence assumée : un argument non résolvable — variable shell, glob,
+ * substitution — vaut « peut-être dans le dépôt » et laisse l'alerte en place.
+ * Seules des cibles toutes explicitement extérieures désamorcent le signal.
+ */
+function deletionStaysOutsideRoot(segment: string, root: string): boolean {
+  const targets = tokens(segment)
+    .slice(1)
+    .filter((token) => !token.startsWith("-"));
+  if (targets.length === 0) return false;
+  return targets.every((target) => {
+    if (/[$`*?{}[\]~%]|\.\./.test(target)) return false;
+    const absolute = path.isAbsolute(target) ? path.resolve(target) : path.resolve(root, target);
+    return !isInsideRoot(root, absolute);
+  });
+}
+
 /** Classification de commandes : corps non exécutés et dry-runs sont ignorés. */
 export function classifyCommand(
   command: string,
@@ -162,7 +182,7 @@ export function classifyCommand(
       ));
     }
     const fsDelete = /^(?:sudo\s+)?(?:rm\b|del\b|remove-item\b)/i.test(segment);
-    if (fsDelete && !hasDryRun(tokens(segment))) {
+    if (fsDelete && !hasDryRun(tokens(segment)) && !deletionStaysOutsideRoot(segment, baseline.root)) {
       findings.push(finding(
         severityFor(config, "destructive-file-command"),
         "destructive-file-command",

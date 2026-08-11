@@ -182,6 +182,53 @@ test("v2: les familles empêchent les signaux corrélés de s'additionner", asyn
   );
 });
 
+/**
+ * Régression de calibration : `write-without-read` a représenté 174 des 176
+ * alertes de l'étage 2 sur le corpus réel, soit un voyant allumé en permanence.
+ * Une preuve de procédé décrit la manière de faire, pas un dommage observable.
+ */
+test("v2: une preuve de procédé isolée n'allume pas le voyant, mais corrobore", async (context) => {
+  const workspaceContext = await workspace(context);
+  const config = loadScoringConfigSync(workspaceContext.root);
+  const unread = { id: "write-without-read", severity: "ORANGE" as const, reason: "" };
+
+  const alone = evaluateBehaviorDecision([unread], config);
+  assert.equal(alone.verdict, "GREEN", "l'absence de lecture seule ne décide pas");
+
+  const corroborated = evaluateBehaviorDecision(
+    [unread, { id: "destructive-edit", severity: "ORANGE", reason: "" }],
+    config,
+  );
+  assert.equal(corroborated.verdict, "ORANGE");
+  assert.deepEqual(corroborated.activeFamilies.slice().sort(), ["content-destruction", "process-evidence"]);
+
+  // Un dommage observable, lui, continue de décider seul.
+  assert.equal(
+    evaluateBehaviorDecision([{ id: "destructive-edit", severity: "ORANGE", reason: "" }], config).verdict,
+    "ORANGE",
+  );
+
+  // Et la garantie rouge ne dépend d'aucune corroboration.
+  assert.equal(
+    evaluateBehaviorDecision([unread, { id: "sensitive-file", severity: "RED", reason: "" }], config).verdict,
+    "RED",
+  );
+});
+
+test("v2: la configuration refuse de rendre une famille rouge seulement corroborante", async (context) => {
+  const workspaceContext = await workspace(context);
+  const config = loadScoringConfigSync(workspaceContext.root);
+  const broken = structuredClone(config) as unknown as Record<string, unknown>;
+  (broken.behavior as Record<string, unknown>).corroboratingFamilies = ["sensitivity"];
+  await fs.writeFile(path.join(workspaceContext.root, "driftlight.scoring.json"), JSON.stringify(broken));
+
+  assert.throws(
+    () => loadScoringConfigSync(workspaceContext.root),
+    /ne peut pas être seulement corroborante/,
+    "désarmer la garantie rouge par configuration doit être impossible",
+  );
+});
+
 test("v2: le plan est un indice, jamais une exemption ni un masque critique", async (context) => {
   const workspaceContext = await workspace(context);
 
@@ -368,21 +415,41 @@ test("v2: un projet non-JS garde l'étage 2 quand le graphe est indisponible", a
   await writeCurrentIntent(root, "Modifie un autre document", { turnId: TURN, resetScope: true });
   await fs.writeFile(path.join(root, "README.md"), "après\n");
   const current = await scanRepository(root);
-  const verdict = new DeterministicClassifier().classify({
-    root,
-    change: { path: "README.md", kind: "modified", before: initial.files["README.md"], after: current.files["README.md"] },
-    baseline,
-    initialSnapshot: initial,
-    currentSnapshot: current,
-    changedFileCount: 1,
-    deletedFileCount: 0,
-    agentReads: [],
-    emittedRuleIds: [],
-    operation: { kind: "edit", deletedLineCount: 0 },
-  });
-  assert.equal(verdict.stage, "behavior");
-  assert.equal(verdict.level, "ORANGE");
-  assert.equal(verdict.shadowScore?.signals.find((signal) => signal.id === "importDistance")?.available, false);
+  const classify = (operation: { kind: "edit" | "write"; deletedLineCount: number }) =>
+    new DeterministicClassifier().classify({
+      root,
+      change: { path: "README.md", kind: "modified", before: initial.files["README.md"], after: current.files["README.md"] },
+      baseline,
+      initialSnapshot: initial,
+      currentSnapshot: current,
+      changedFileCount: 1,
+      deletedFileCount: 0,
+      agentReads: [],
+      emittedRuleIds: [],
+      operation,
+    });
+
+  // Une édition ordinaire sur un fichier non lu : le seul signal actif est une
+  // preuve de procédé, qui ne décide jamais seule.
+  const ordinary = classify({ kind: "edit", deletedLineCount: 0 });
+  assert.equal(ordinary.stage, "behavior");
+  assert.equal(ordinary.shadowScore?.signals.find((signal) => signal.id === "importDistance")?.available, false);
+  assert.equal(ordinary.level, "GREEN");
+  assert.equal(
+    ordinary.scoreBreakdown.signals.find((signal) => signal.id === "write-without-read")?.triggered,
+    true,
+    "le signal reste observé et journalisé, il ne décide simplement pas seul",
+  );
+
+  // La même absence de lecture, corroborée par une destruction observable,
+  // alerte bien : l'étage 2 reste opérant sans graphe d'import.
+  const destructive = classify({ kind: "write", deletedLineCount: 400 });
+  assert.equal(destructive.stage, "behavior");
+  assert.equal(destructive.level, "ORANGE");
+  assert.deepEqual(
+    destructive.scoreBreakdown.activeSignalFamilies?.slice().sort(),
+    ["content-destruction", "process-evidence"],
+  );
 });
 
 test("v2: explain sépare le verdict effectif du shadowScore", async (context) => {

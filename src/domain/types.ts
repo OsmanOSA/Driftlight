@@ -196,6 +196,13 @@ export interface ScoringConfig {
   behavior: {
     severities: Record<string, Severity>;
     signalFamilies: Record<string, string>;
+    /**
+     * Familles qui corroborent sans jamais décider seules. Une preuve de
+     * procédé — « l'agent n'a pas lu ce fichier » — décrit la manière de faire,
+     * pas un dommage observable : elle renforce un autre signal mais ne peut pas
+     * allumer le voyant à elle seule.
+     */
+    corroboratingFamilies?: string[];
     decisionTable: Array<{
       id: string;
       verdict: Severity;

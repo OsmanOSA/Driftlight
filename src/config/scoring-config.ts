@@ -106,6 +106,21 @@ function validateScoringConfig(value: unknown, source: string): ScoringConfig {
     }
     families.add(family);
   }
+  const corroborating = value.behavior.corroboratingFamilies ?? [];
+  if (!Array.isArray(corroborating) || !corroborating.every((family) => typeof family === "string" && families.has(family))) {
+    throw new Error("Configuration invalide : behavior.corroboratingFamilies doit lister des familles connues.");
+  }
+  if (corroborating.length >= families.size) {
+    throw new Error("Configuration invalide : au moins une famille doit pouvoir décider seule.");
+  }
+  // Une famille corroborante ne décide jamais seule. Y placer un signal RED
+  // annulerait silencieusement la garantie « un signal rouge allume le rouge ».
+  for (const [id, severity] of Object.entries(value.behavior.severities)) {
+    const family = (value.behavior.signalFamilies as Record<string, string>)[id];
+    if (severity === "RED" && family !== undefined && corroborating.includes(family)) {
+      throw new Error(`Configuration invalide : ${id} est RED, sa famille ${family} ne peut pas être seulement corroborante.`);
+    }
+  }
   if (value.behavior.decisionTable.length === 0) {
     throw new Error("Configuration invalide : behavior.decisionTable ne peut pas être vide.");
   }
@@ -151,6 +166,20 @@ function validateScoringConfig(value: unknown, source: string): ScoringConfig {
   }
   if (value.behavior.decisionTable.slice(0, redCatchAllIndex).some((rule) => rule.verdict !== "RED")) {
     throw new Error("Configuration invalide : aucune décision ORANGE ne peut précéder la garantie RED.");
+  }
+  // La première règle correspondante gagne : une règle plus permissive placée
+  // avant une règle plus exigeante rendrait cette dernière inatteignable.
+  const lastRequirement = new Map<string, number>();
+  for (const rule of value.behavior.decisionTable) {
+    const severity = rule.when.minimumSignalSeverity as string;
+    const required = rule.when.minimumDistinctFamilies as number;
+    const previous = lastRequirement.get(severity);
+    if (previous !== undefined && required > previous) {
+      throw new Error(
+        `Règle inatteignable : ${rule.id} exige plus de familles qu'une règle ${severity} qui la précède.`,
+      );
+    }
+    lastRequirement.set(severity, required);
   }
   return value as unknown as ScoringConfig;
 }

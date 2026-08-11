@@ -5,6 +5,7 @@ import path from "node:path";
 import test, { after } from "node:test";
 import { DeterministicClassifier } from "../src/classification/deterministic-classifier.js";
 import { classifyCommand } from "../src/classification/rules.js";
+import { projectConfigPath, projectStateDirectory, projectStatePath } from "../src/shared/state-paths.js";
 import type {
   AgentReadRecord,
   ChangeKind,
@@ -30,8 +31,8 @@ after(() => {
 function intentRoot(task: string): string {
   const root = mkdtempSync(path.join(os.tmpdir(), "driftlight-classifier-"));
   intentRoots.push(root);
-  mkdirSync(path.join(root, ".driftlight"), { recursive: true });
-  writeFileSync(path.join(root, ".driftlight", "current-intent.json"), JSON.stringify({
+  mkdirSync(projectStateDirectory(root), { recursive: true });
+  writeFileSync(projectStatePath(root, "current-intent.json"), JSON.stringify({
     schemaVersion: 1,
     version: 1,
     turnId: `turn-${intentRoots.length}`,
@@ -235,7 +236,9 @@ test("the significant line-deletion threshold is configurable", () => {
       operation: { kind: "edit", deletedLineCount: 3 },
     },
   );
-  writeFileSync(path.join(classificationInput.root, ".driftlight", "config.json"), JSON.stringify({
+  // La configuration reste dans le dépôt, contrairement à l'état dérivé.
+  mkdirSync(path.dirname(projectConfigPath(classificationInput.root)), { recursive: true });
+  writeFileSync(projectConfigPath(classificationInput.root), JSON.stringify({
     largeLineDeletionThreshold: 3,
   }));
 
@@ -248,6 +251,23 @@ test("destructive Git commands are observed as red and never auto-executed", () 
   const findings = classifyCommand("git restore .", { ...emptyBaseline, files: [{ path: "work.ts", status: " M", kind: "modified" }] });
   assert.equal(findings[0]?.severity, "RED");
   assert.equal(findings[0]?.code, "destructive-git-command");
+});
+
+/**
+ * Régression : effacer un dossier temporaire hors du dépôt allumait le rouge.
+ * DriftLight surveille un périmètre, pas la machine entière.
+ */
+test("file deletion is only a signal when it can reach the observed repository", () => {
+  const code = (command: string): string | undefined =>
+    classifyCommand(command, emptyBaseline).find((finding) => finding.code === "destructive-file-command")?.code;
+
+  assert.equal(code("rm -rf /tmp/build-cache"), undefined, "hors du dépôt : aucun signal");
+  assert.equal(code("rm -rf src/generated"), "destructive-file-command", "dans le dépôt : signal");
+
+  // Prudence : une cible non résolvable statiquement peut viser le dépôt.
+  assert.equal(code("rm -rf \"$TMPDIR\""), "destructive-file-command", "variable shell : on reste prudent");
+  assert.equal(code("rm -rf ../autre-projet"), "destructive-file-command", "remontée de chemin : on reste prudent");
+  assert.equal(code("rm -rf"), "destructive-file-command", "sans cible explicite : on reste prudent");
 });
 
 test("command classification ignores dry-runs, branch checkout and heredoc bodies", () => {

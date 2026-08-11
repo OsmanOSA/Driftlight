@@ -1,5 +1,8 @@
 import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { writeJsonAtomic } from "../shared/atomic-write.js";
+import { CLAUDE_READ_TOOLS } from "../intent/agent-context.js";
 
 interface HookHandler {
   type: "command";
@@ -16,12 +19,19 @@ interface HookGroup {
 
 type Settings = Record<string, unknown> & { hooks?: Record<string, unknown> };
 
+/**
+ * Dérivé de la liste des outils de lecture du Core. Un outil que le Core sait
+ * interpréter mais que Claude Code ne livre jamais produit un faux
+ * `write-without-read` : les deux listes doivent rester solidaires.
+ */
+export const READ_TOOL_MATCHER = CLAUDE_READ_TOOLS.join("|");
+
 const HOOK_DEFINITIONS: Array<{ event: string; matcher?: string; timeout?: number }> = [
   { event: "SessionStart", matcher: "startup|resume|clear" },
   { event: "UserPromptSubmit" },
   { event: "PreToolUse", matcher: "Bash|PowerShell|Edit|Write|NotebookEdit" },
   { event: "PostToolUse", matcher: "Bash|PowerShell|Edit|Write|NotebookEdit" },
-  { event: "PostToolUse", matcher: "Read" },
+  { event: "PostToolUse", matcher: READ_TOOL_MATCHER },
   { event: "FileChanged", matcher: ".env|package.json|package-lock.json|pnpm-lock.yaml|yarn.lock" },
   { event: "Stop" },
   { event: "SessionEnd", timeout: 5 },
@@ -80,10 +90,23 @@ export interface InstallClaudeHooksOptions {
   cwd: string;
   nodeExecutable?: string;
   cliEntry?: string;
+  /**
+   * Installe les hooks au niveau de l'utilisateur plutôt que du dépôt. Claude
+   * Code les applique alors à tout projet ouvert sur la machine : ouvrir un
+   * nouveau dépôt suffit à être observé, sans installation par projet.
+   */
+  global?: boolean;
+}
+
+/** Réglages utilisateur de Claude Code, appliqués à tous les projets. */
+export function claudeSettingsPath(options: { cwd: string; global?: boolean; homeDir?: string }): string {
+  return options.global
+    ? path.join(options.homeDir ?? os.homedir(), ".claude", "settings.json")
+    : path.join(path.resolve(options.cwd), ".claude", "settings.local.json");
 }
 
 export async function installClaudeHooks(options: InstallClaudeHooksOptions): Promise<string> {
-  const settingsPath = path.join(path.resolve(options.cwd), ".claude", "settings.local.json");
+  const settingsPath = claudeSettingsPath(options);
   let settings: Settings = {};
   try {
     const parsed: unknown = JSON.parse(await fs.readFile(settingsPath, "utf8"));
@@ -103,9 +126,6 @@ export async function installClaudeHooks(options: InstallClaudeHooksOptions): Pr
   };
 
   mergeClaudeHookSettings(settings, handler);
-  await fs.mkdir(path.dirname(settingsPath), { recursive: true });
-  const temporary = `${settingsPath}.${process.pid}.tmp`;
-  await fs.writeFile(temporary, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
-  await fs.rename(temporary, settingsPath);
+  await writeJsonAtomic(settingsPath, settings);
   return settingsPath;
 }

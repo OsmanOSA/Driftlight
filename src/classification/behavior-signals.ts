@@ -153,6 +153,7 @@ export function evaluateBehaviorDecision(
   config: ScoringConfig,
 ): BehaviorDecision {
   const active = triggered(findings);
+  const corroborating = new Set(config.behavior.corroboratingFamilies ?? []);
   for (const rule of config.behavior.decisionTable) {
     const minimum = ORDER[rule.when.minimumSignalSeverity];
     const families = [...new Set(
@@ -160,6 +161,10 @@ export function evaluateBehaviorDecision(
         .filter((finding) => ORDER[finding.severity] >= minimum)
         .map((finding) => familyFor(config, finding)),
     )];
+    // Une famille purement corroborante ne décide jamais seule : sans au moins
+    // une famille décisive, la règle ne s'applique pas et l'événement reste
+    // journalisé sans alerte.
+    if (!families.some((family) => !corroborating.has(family))) continue;
     const required = rule.when.requiredFamilies ?? [];
     if (
       families.length >= rule.when.minimumDistinctFamilies

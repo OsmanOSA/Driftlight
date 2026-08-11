@@ -67,8 +67,20 @@ export function extractDeclaredPlanPaths(root: string, toolInput: unknown): stri
   return extractRepoPaths(root, toolInput);
 }
 
+/**
+ * Outils de lecture tels que Claude Code les nomme. L'installeur construit son
+ * matcher depuis cette liste : ajouter un outil ici suffit à le faire livrer.
+ */
+export const CLAUDE_READ_TOOLS = ["Read", "Grep", "Glob"] as const;
+
+/** Codex nomme la lecture `read_file` ; le Core accepte les deux familles. */
+const READ_LIKE_TOOLS = new Set<string>([
+  ...CLAUDE_READ_TOOLS.map((name) => name.toLowerCase()),
+  "read_file",
+]);
+
 export function isReadLikeTool(toolName: string): boolean {
-  return ["read", "read_file", "grep", "glob"].includes(toolName.toLowerCase());
+  return READ_LIKE_TOOLS.has(toolName.toLowerCase());
 }
 
 export function isPlanTool(toolName: string): boolean {
