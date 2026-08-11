@@ -3,6 +3,7 @@ import path from "node:path";
 import type { CurrentStatus, SessionEvent, Severity } from "../domain/types.js";
 import { projectStateDirectory, projectStatePath } from "../shared/state-paths.js";
 import { writeJsonAtomic, writeJsonAtomicSync } from "../shared/atomic-write.js";
+import { readJsonStateSync } from "../shared/read-state.js";
 
 const ORDER: Record<Severity, number> = { GREEN: 0, ORANGE: 1, RED: 2 };
 
@@ -21,12 +22,7 @@ export function currentStatusPath(root: string): string {
 }
 
 export function readCurrentStatusSync(root: string): CurrentStatus {
-  try {
-    return JSON.parse(readFileSync(currentStatusPath(root), "utf8")) as CurrentStatus;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return emptyStatus();
-    throw error;
-  }
+  return readJsonStateSync<CurrentStatus>(currentStatusPath(root)) ?? emptyStatus();
 }
 
 function saveStatusSync(root: string, status: CurrentStatus): void {

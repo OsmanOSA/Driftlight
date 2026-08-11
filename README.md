@@ -14,7 +14,14 @@ DriftLight est un voyant local qui compare la demande donnée à un coding agent
 - confirmation Claude Code sur rouge par défaut, sans exécution destructive automatique ;
 - notification système sur rouge, plafonnée et dédupliquée, jamais bloquante ;
 - titre du terminal reflétant le statut, restauré en fin de session ;
-- aucun affichage pour les événements verts.
+- aucun affichage pour les événements verts ;
+- aucune panne de DriftLight ne peut retenir une action ni remonter une erreur à
+  l'agent : une exception, un disque plein ou une entrée inattendue produisent un
+  silence complet et une sortie normale, avec une trace locale dans
+  `hook-health.json` pour le diagnostic ;
+- un état local corrompu dégrade la précision sans éteindre le voyant : un profil
+  ou un graphe illisible vaut absent, et la protection des secrets et du travail
+  préexistant continue de s'appliquer.
 
 DriftLight n'écrit rien dans les dépôts qu'il observe. L'état de chaque projet — sessions, intention courante, profil, graphe, journaux — vit sous `~/.driftlight/projects/<nom>-<empreinte>/`, hors du dépôt : rien n'apparaît dans votre `git status`, rien ne risque d'être commité par accident. Seul `.driftlight/config.json`, si vous en créez un, appartient au projet.
 

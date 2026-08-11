@@ -2,11 +2,11 @@
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { CodexAdapter } from "./adapters/codex/adapter.js";
-import { handleClaudeHook } from "./claude/handler.js";
+import { runHookSafely, type SafeHookOutcome } from "./claude/safe-hook.js";
 import { installClaudeHooks, isInstalledPackage } from "./claude/installer.js";
 import type { ClaudeHookInput, SessionRecord } from "./domain/types.js";
 import { loadConfigSync } from "./config/config.js";
-import { captureGitBaseline } from "./git/baseline.js";
+import { captureGitBaseline, resolveObservableRoot } from "./git/baseline.js";
 import { addCurrentScope, writeCurrentIntent } from "./intent/current-intent.js";
 import { dispatchNotifications } from "./notify/dispatcher.js";
 import { PollingObserver } from "./observer/polling-observer.js";
@@ -20,7 +20,8 @@ import {
   resolveSessionStore,
 } from "./session/service.js";
 import { SessionStore } from "./session/store.js";
-import { driftlightHome } from "./shared/state-paths.js";
+import { driftlightHome, projectStatePath } from "./shared/state-paths.js";
+import { writeJsonAtomic } from "./shared/atomic-write.js";
 import { acknowledgeCurrentStatus } from "./status/current-status.js";
 import { formatScoreExplanation, formatSessionSummary, formatSignal } from "./ui/terminal.js";
 import { applyTerminalTitle, pushTerminalTitle, restoreTerminalTitle } from "./ui/terminal-title.js";
@@ -278,12 +279,45 @@ async function runCodex(args: string[]): Promise<void> {
   throw new Error("Commande attendue : driftlight codex connect|disconnect|status");
 }
 
+/** stdout doit être vidé avant la sortie, sinon l'hôte lit une réponse tronquée. */
+function writeStdout(payload: string): Promise<void> {
+  return new Promise((resolve) => process.stdout.write(payload, () => resolve()));
+}
+
+/**
+ * Une dégradation reste silencieuse pour l'agent mais laisse une trace locale :
+ * une panne invisible est le prix du fail-open, un diagnostic impossible ne
+ * l'est pas. L'enregistrement est au mieux — il ne peut pas faire échouer le
+ * hook qu'il documente.
+ */
+async function recordDegradation(raw: string, outcome: SafeHookOutcome): Promise<void> {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    const cwd = (parsed as { cwd?: unknown })?.cwd;
+    if (typeof cwd !== "string") return;
+    const root = await resolveObservableRoot(cwd);
+    if (!root) return;
+    await writeJsonAtomic(projectStatePath(root, "hook-health.json"), {
+      schemaVersion: 1,
+      degraded: outcome.degraded,
+      detail: outcome.detail ?? null,
+      event: (parsed as { hook_event_name?: unknown })?.hook_event_name ?? null,
+      at: new Date().toISOString(),
+    });
+  } catch {
+    // Le diagnostic est un confort, jamais une condition de fonctionnement.
+  }
+}
+
 async function runHook(): Promise<void> {
   const raw = await readStdin();
-  if (!raw.trim()) return;
-  const input = JSON.parse(raw) as ClaudeHookInput;
-  const output = await handleClaudeHook(input);
-  if (output) process.stdout.write(JSON.stringify(output));
+  const outcome = await runHookSafely(raw);
+  if (outcome.stdout) await writeStdout(outcome.stdout);
+  if (!outcome.degraded) return;
+  if (process.env.DRIFTLIGHT_DEBUG) {
+    console.error(`DriftLight (dégradé, ${outcome.degraded}) : ${outcome.detail ?? "sans détail"}`);
+  }
+  await recordDegradation(raw, outcome);
 }
 
 export async function main(args = process.argv.slice(2)): Promise<void> {

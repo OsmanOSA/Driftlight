@@ -5,6 +5,7 @@ import type { CurrentIntentState } from "../domain/types.js";
 import { safeIdentifier } from "../shared/paths.js";
 import { projectStatePath } from "../shared/state-paths.js";
 import { writeJsonAtomic } from "../shared/atomic-write.js";
+import { readJsonStateSync } from "../shared/read-state.js";
 
 /**
  * L'intention appartient à une session, pas à un dépôt.
@@ -22,14 +23,8 @@ export function currentIntentPath(root: string, sessionId?: string): string {
     : projectStatePath(root, "current-intent.json");
 }
 
-function readIntentFile(filePath: string): CurrentIntentState | null {
-  try {
-    return JSON.parse(readFileSync(filePath, "utf8")) as CurrentIntentState;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  }
-}
+const readIntentFile = (filePath: string): CurrentIntentState | null =>
+  readJsonStateSync<CurrentIntentState>(filePath);
 
 export function readCurrentIntentSync(root: string, sessionId?: string): CurrentIntentState | null {
   const own = readIntentFile(currentIntentPath(root, sessionId));

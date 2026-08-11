@@ -8,6 +8,7 @@ import type { RepoProfile, RepositorySnapshot, ScoringConfig } from "../domain/t
 import { toPosixPath } from "../shared/paths.js";
 import { projectStatePath } from "../shared/state-paths.js";
 import { writeJsonAtomic } from "../shared/atomic-write.js";
+import { readJsonStateSync } from "../shared/read-state.js";
 
 function gitText(root: string, args: string[], maxBuffer = 100 * 1024 * 1024): string | null {
   try {
@@ -94,12 +95,7 @@ export function repoProfilePath(root: string): string {
 }
 
 export function readRepoProfileSync(root: string): RepoProfile | null {
-  try {
-    return JSON.parse(readFileSync(repoProfilePath(root), "utf8")) as RepoProfile;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  }
+  return readJsonStateSync<RepoProfile>(repoProfilePath(root));
 }
 
 export async function buildRepoProfile(

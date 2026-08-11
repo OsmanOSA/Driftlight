@@ -5,6 +5,7 @@ import type { ImportGraph, ObservedChange, RepositorySnapshot } from "../domain/
 import { toPosixPath } from "../shared/paths.js";
 import { projectStatePath } from "../shared/state-paths.js";
 import { writeJsonAtomic } from "../shared/atomic-write.js";
+import { readJsonStateSync } from "../shared/read-state.js";
 
 const SOURCE_EXTENSION = /\.(?:[cm]?[jt]sx?)$/i;
 const RESOLUTION_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
@@ -151,12 +152,7 @@ export function importGraphPath(root: string): string {
 }
 
 export function readImportGraphSync(root: string): ImportGraph | null {
-  try {
-    return JSON.parse(readFileSync(importGraphPath(root), "utf8")) as ImportGraph;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  }
+  return readJsonStateSync<ImportGraph>(importGraphPath(root));
 }
 
 async function writeImportGraph(root: string, graph: ImportGraph): Promise<void> {

@@ -4,6 +4,7 @@ import type { SessionRecord } from "../domain/types.js";
 import { safeIdentifier } from "../shared/paths.js";
 import { projectStatePath } from "../shared/state-paths.js";
 import { writeJsonAtomic } from "../shared/atomic-write.js";
+import { readJsonState } from "../shared/read-state.js";
 
 /**
  * Les événements verts ne sont jamais affichés, mais ils ne sont pas du déchet :
@@ -38,13 +39,7 @@ export class SessionStore {
   }
 
   public async load(id: string): Promise<SessionRecord | null> {
-    try {
-      return JSON.parse(await fs.readFile(this.sessionPath(id), "utf8")) as SessionRecord;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") return null;
-      throw error;
-    }
+    return await readJsonState<SessionRecord>(this.sessionPath(id));
   }
 
   public async latest(): Promise<SessionRecord | null> {
@@ -56,10 +51,9 @@ export class SessionStore {
     let names: string[];
     try {
       names = await fs.readdir(this.sessionsDirectory);
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") return [];
-      throw error;
+    } catch {
+      // Répertoire absent ou illisible : aucune session à présenter.
+      return [];
     }
 
     const candidates = await Promise.all(
@@ -71,10 +65,11 @@ export class SessionStore {
         })),
     );
     candidates.sort((left, right) => right.stat.mtimeMs - left.stat.mtimeMs);
-    return await Promise.all(
-      candidates.map(async (candidate) => JSON.parse(
-        await fs.readFile(path.join(this.sessionsDirectory, candidate.name), "utf8"),
-      ) as SessionRecord),
+    const loaded = await Promise.all(
+      candidates.map(async (candidate) =>
+        await readJsonState<SessionRecord>(path.join(this.sessionsDirectory, candidate.name))),
     );
+    // Une seule session illisible ne doit pas rendre l'historique entier muet.
+    return loaded.filter((session): session is SessionRecord => session !== null);
   }
 }
