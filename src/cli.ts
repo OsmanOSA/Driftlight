@@ -23,6 +23,8 @@ import { SessionStore } from "./session/store.js";
 import { driftlightHome, projectStatePath } from "./shared/state-paths.js";
 import { writeJsonAtomic } from "./shared/atomic-write.js";
 import { acknowledgeCurrentStatus } from "./status/current-status.js";
+import { diagnose, formatChecks } from "./status/doctor.js";
+import { listProjects, projectsDirectory, purgeVanishedProjects, sweepStaleTemporaries } from "./status/projects.js";
 import { formatScoreExplanation, formatSessionSummary, formatSignal } from "./ui/terminal.js";
 import { applyTerminalTitle, pushTerminalTitle, restoreTerminalTitle } from "./ui/terminal-title.js";
 
@@ -60,6 +62,8 @@ Commandes :
   driftlight codex connect
   driftlight codex disconnect
   driftlight codex status
+  driftlight projects [--purge]        # état de tous les projets de la machine
+  driftlight doctor [--cwd .]          # diagnostic de l'installation
   driftlight hook                       # appelé par Claude Code via stdin JSON
 
 Tout reste local, sur cette machine uniquement. L'état par projet est rangé sous
@@ -309,6 +313,49 @@ async function recordDegradation(raw: string, outcome: SafeHookOutcome): Promise
   }
 }
 
+function formatBytes(bytes: number): string {
+  return bytes >= 1024 * 1024
+    ? `${(bytes / 1024 / 1024).toFixed(1)} Mo`
+    : `${Math.max(1, Math.round(bytes / 1024))} Ko`;
+}
+
+async function runProjects(args: string[]): Promise<void> {
+  if (args.includes("--purge")) {
+    const removed = await purgeVanishedProjects();
+    const swept = await sweepStaleTemporaries();
+    if (removed.length === 0) console.log("Aucun projet disparu : rien à purger.");
+    for (const project of removed) {
+      console.log(`✓ Purgé ${project.root ?? path.basename(project.directory)} (${formatBytes(project.bytes)})`);
+    }
+    if (swept.length > 0) console.log(`✓ ${swept.length} temporaire(s) résiduel(s) supprimé(s).`);
+    return;
+  }
+
+  const projects = await listProjects();
+  if (projects.length === 0) {
+    console.log(`Aucun projet observé pour l'instant. L'état vivra sous ${projectsDirectory()}.`);
+    return;
+  }
+  console.log(`DriftLight · ${projects.length} projet(s) sous ${projectsDirectory()}`);
+  for (const project of projects) {
+    const marker = project.present ? " " : "✗";
+    const activity = project.lastActivity?.slice(0, 16).replace("T", " ") ?? "jamais";
+    console.log(
+      `  ${marker} ${(project.root ?? path.basename(project.directory)).padEnd(48)}`
+      + ` ${String(project.sessions).padStart(3)} session(s)  ${formatBytes(project.bytes).padStart(8)}  ${activity}`
+      + (project.degraded ? `  dégradé:${project.degraded}` : ""),
+    );
+  }
+  if (projects.some((project) => !project.present)) {
+    console.log("\n  ✗ dépôt introuvable — `driftlight projects --purge` libère leur état.");
+  }
+}
+
+async function runDoctor(args: string[]): Promise<void> {
+  const cwd = path.resolve(option(args, "--cwd") ?? process.cwd());
+  console.log(formatChecks(await diagnose(cwd)));
+}
+
 async function runHook(): Promise<void> {
   const raw = await readStdin();
   const outcome = await runHookSafely(raw);
@@ -332,6 +379,8 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     case "ack": await runAck(args); break;
     case "claude": await runClaude(args); break;
     case "codex": await runCodex(args); break;
+    case "projects": await runProjects(args); break;
+    case "doctor": await runDoctor(args); break;
     case "hook": await runHook(); break;
     case "help":
     case "--help":

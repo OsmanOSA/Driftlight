@@ -3,6 +3,9 @@ import { cpSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from
 import os from "node:os";
 import path from "node:path";
 
+/** Fichier qui rattache un dossier d'état au dépôt dont il provient. */
+export const PROJECT_MARKER = "project.json";
+
 /**
  * Racine de l'état DriftLight sur la machine. `DRIFTLIGHT_HOME` permet de
  * l'isoler — les tests s'en servent pour ne jamais écrire dans le vrai profil.
@@ -53,9 +56,29 @@ export function projectStateDirectory(root: string): string {
     // repartir d'un état vide.
     chosen = legacy;
   }
+  if (chosen === central) ensureProjectMarker(central, resolved);
 
   resolvedDirectories.set(resolved, chosen);
   return chosen;
+}
+
+/**
+ * Le marqueur dit à quel dépôt appartient un dossier d'état. Sans lui, le
+ * stockage central n'est qu'une liste d'empreintes illisibles : impossible de
+ * présenter les projets, ni de savoir lesquels ne correspondent plus à rien.
+ */
+function ensureProjectMarker(central: string, root: string): void {
+  try {
+    if (existsSync(path.join(central, PROJECT_MARKER))) return;
+    mkdirSync(central, { recursive: true });
+    writeFileSync(
+      path.join(central, PROJECT_MARKER),
+      `${JSON.stringify({ root, adoptedAt: new Date().toISOString() }, null, 2)}\n`,
+      "utf8",
+    );
+  } catch {
+    // Confort de diagnostic : son absence ne doit rien empêcher.
+  }
 }
 
 /**

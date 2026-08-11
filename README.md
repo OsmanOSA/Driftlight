@@ -68,6 +68,25 @@ node D:/Driftlight/dist/src/cli.js ack --cwd D:/mon-projet
 
 `explain` affiche, pour chaque signal, la valeur brute, le poids, la contribution et son éventuelle indisponibilité. `mark --noise|--useful` qualifie ensuite une alerte orange ou rouge pour calibrer DriftLight localement. Les événements verts restent dans le journal JSON mais ne sont jamais affichés. `Mark as expected` acquitte seulement l'événement choisi. `Add to task scope` enrichit le fichier d'intention courant. `ack` remet à zéro le statut persistant utilisable plus tard par une statusline.
 
+## Voir et reprendre l'état de la machine
+
+```bash
+driftlight projects            # tous les projets observés, leur taille, leur activité
+driftlight projects --purge    # libère l'état des dépôts qui n'existent plus
+driftlight doctor              # diagnostic de l'installation courante
+```
+
+`projects` marque d'un `✗` les dossiers dont le dépôt a disparu. `--purge` ne
+supprime que ceux-là : un projet simplement inactif garde son historique, car
+l'ancienneté n'est pas une preuve d'abandon et l'historique est ce qui permet de
+calibrer. Un dossier dont l'origine ne peut pas être établie n'est jamais
+supprimé — ne rien savoir n'est pas savoir qu'il n'y a rien.
+
+`doctor` vérifie le dépôt courant, l'installation des hooks, la stabilité du
+binaire, la configuration de score et l'espace occupé. Il remonte surtout les
+dégradations enregistrées par le filet de sécurité : celui-ci étant silencieux
+par construction, c'est le seul endroit où une panne répétée devient visible.
+
 ## Intégration Claude Code
 
 Le format est aligné sur la documentation officielle actuelle de Claude Code : commandes en forme `command` + `args`, JSON reçu sur stdin, et événements `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `FileChanged`, `Stop` et `SessionEnd`.
