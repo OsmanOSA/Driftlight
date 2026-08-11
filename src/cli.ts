@@ -3,7 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { CodexAdapter } from "./adapters/codex/adapter.js";
 import { handleClaudeHook } from "./claude/handler.js";
-import { installClaudeHooks } from "./claude/installer.js";
+import { installClaudeHooks, isInstalledPackage } from "./claude/installer.js";
 import type { ClaudeHookInput, SessionRecord } from "./domain/types.js";
 import { loadConfigSync } from "./config/config.js";
 import { captureGitBaseline } from "./git/baseline.js";
@@ -210,11 +210,20 @@ async function runClaude(args: string[]): Promise<void> {
   const cwd = path.resolve(option(args, "--cwd") ?? process.cwd());
   const global = args.includes("--global");
   const settingsPath = await installClaudeHooks({ cwd, global });
+  const packaged = isInstalledPackage(process.argv[1] ?? "");
   console.log(`✓ Hooks Claude Code installés sans remplacer les hooks existants : ${settingsPath}`);
   if (global) {
     console.log("  Portée : tous les dépôts Git ouverts sur cette machine, y compris les prochains.");
     console.log(`  État par projet : ${path.join(driftlightHome(), "projects")}`);
     console.log("  Hors dépôt Git, DriftLight reste entièrement silencieux.");
+    if (!packaged) {
+      console.log("");
+      console.log("⚠ Installé depuis une copie de développement, pas depuis un paquet.");
+      console.log(`  Les réglages figent le chemin ${path.resolve(process.argv[1] ?? "dist/src/cli.js")}.`);
+      console.log("  Déplacer cette copie casserait les hooks, et surtout : reconstruire");
+      console.log("  change le comportement de toutes les sessions ouvertes sur la machine.");
+      console.log("  Pour une installation stable : npm install -g . puis driftlight claude install --global");
+    }
   } else {
     console.log("  Portée : ce dépôt seulement. Utilisez --global pour couvrir toute la machine.");
   }

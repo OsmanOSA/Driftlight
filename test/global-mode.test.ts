@@ -5,7 +5,12 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { handleClaudeHook } from "../src/claude/handler.js";
-import { claudeSettingsPath, installClaudeHooks } from "../src/claude/installer.js";
+import {
+  claudeSettingsPath,
+  installClaudeHooks,
+  isInstalledPackage,
+  resolveInvocation,
+} from "../src/claude/installer.js";
 import { loadConfigSync } from "../src/config/config.js";
 import type { ClaudeHookInput } from "../src/domain/types.js";
 import { SessionStore } from "../src/session/store.js";
@@ -174,4 +179,21 @@ test("machine preferences apply everywhere and a repository can still diverge", 
   const overridden = loadConfigSync(root);
   assert.equal(overridden.blockOnRed, true, "le dépôt a le dernier mot");
   assert.equal(overridden.notifyOnOrange, true, "ce qu'il ne dit pas reste hérité de la machine");
+});
+
+/**
+ * Régression opérationnelle : les réglages figeaient un chemin vers le `dist/`
+ * d'une copie de développement. Reconstruire changeait alors le comportement de
+ * toutes les sessions ouvertes sur la machine — c'est arrivé.
+ */
+test("an installed package is referenced by name, a dev checkout by path", () => {
+  const packaged = path.join("/usr", "lib", "node_modules", "driftlight", "dist", "src", "cli.js");
+  assert.equal(isInstalledPackage(packaged), true);
+  assert.deepEqual(resolveInvocation(packaged), { command: "driftlight", args: ["hook"] });
+
+  const checkout = path.resolve("D:", "Driftlight", "dist", "src", "cli.js");
+  assert.equal(isInstalledPackage(checkout), false);
+  const invocation = resolveInvocation(checkout, "/usr/bin/node");
+  assert.equal(invocation.command, "/usr/bin/node");
+  assert.deepEqual(invocation.args, [checkout, "hook"]);
 });

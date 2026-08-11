@@ -98,6 +98,29 @@ export interface InstallClaudeHooksOptions {
   global?: boolean;
 }
 
+/**
+ * Un paquet installé expose la commande `driftlight` : les réglages la
+ * désignent par son nom, et survivent aux mises à jour comme aux déplacements.
+ *
+ * Depuis une copie de développement il n'existe pas de nom stable, et les
+ * réglages doivent figer un chemin absolu vers `dist/`. Ce chemin est fragile
+ * de deux façons : déplacer la copie casse les hooks, et surtout reconstruire
+ * change le comportement de *toutes* les sessions ouvertes sur la machine,
+ * puisqu'elles pointent toutes vers le même `dist/`.
+ */
+export function isInstalledPackage(cliEntry: string): boolean {
+  return path.resolve(cliEntry).split(/[\\/]/).includes("node_modules");
+}
+
+export function resolveInvocation(
+  cliEntry: string,
+  nodeExecutable?: string,
+): { command: string; args: string[] } {
+  return isInstalledPackage(cliEntry)
+    ? { command: "driftlight", args: ["hook"] }
+    : { command: nodeExecutable ?? process.execPath, args: [path.resolve(cliEntry), "hook"] };
+}
+
 /** Réglages utilisateur de Claude Code, appliqués à tous les projets. */
 export function claudeSettingsPath(options: { cwd: string; global?: boolean; homeDir?: string }): string {
   return options.global
@@ -117,10 +140,10 @@ export async function installClaudeHooks(options: InstallClaudeHooksOptions): Pr
   }
 
   const cliEntry = path.resolve(options.cliEntry ?? process.argv[1] ?? "dist/src/cli.js");
+  const invocation = resolveInvocation(cliEntry, options.nodeExecutable);
   const handler: HookHandler = {
+    ...invocation,
     type: "command",
-    command: options.nodeExecutable ?? process.execPath,
-    args: [cliEntry, "hook"],
     timeout: 10,
     statusMessage: "DriftLight observe localement…",
   };
