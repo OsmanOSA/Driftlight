@@ -26,6 +26,18 @@ export function currentIntentPath(root: string, sessionId?: string): string {
 const readIntentFile = (filePath: string): CurrentIntentState | null =>
   readJsonStateSync<CurrentIntentState>(filePath);
 
+/**
+ * L'intention de cette session seulement, sans reprise de l'intention partagée.
+ *
+ * La citation affichée dans une notification doit être la demande que
+ * l'utilisateur vient d'écrire ici. Reprendre celle d'une autre session lui
+ * ferait relire une phrase vieille de plusieurs heures et juger l'alerte
+ * dessus ; mieux vaut ne rien citer que citer la mauvaise demande.
+ */
+export function readOwnCurrentIntentSync(root: string, sessionId?: string): CurrentIntentState | null {
+  return readIntentFile(currentIntentPath(root, sessionId));
+}
+
 export function readCurrentIntentSync(root: string, sessionId?: string): CurrentIntentState | null {
   const own = readIntentFile(currentIntentPath(root, sessionId));
   if (own || !sessionId) return own;

@@ -114,14 +114,18 @@ export interface NotificationCopy {
 }
 
 /**
- * Le titre décrit ce qui s'est réellement passé, pas ce que la sévérité laisse
- * supposer : un verdict rouge ne bloque que si `blockOnRed` est actif et que le
- * hook a effectivement renvoyé un refus. Annoncer « action bloquée » pendant que
- * l'agent poursuit son travail serait mensonger.
+ * Le titre décrit ce que DriftLight a fait, et rien de plus.
+ *
+ * Il a longtemps annoncé « action bloquée ». C'était faux deux fois : DriftLight
+ * renvoie une demande de confirmation, il n'interrompt rien lui-même, et il n'a
+ * aucun moyen de savoir si l'agent hôte a honoré cette demande — un mode de
+ * permission permissif peut la contourner sans le prévenir. Promettre un blocage
+ * qu'on ne contrôle pas est la pire chose qu'un voyant puisse faire : elle
+ * transforme une alerte en fausse sécurité.
  */
 export function notificationTitle(root: string, event: SessionEvent, blocked: boolean): string {
   const verdict = blocked
-    ? "action bloquée"
+    ? "confirmation demandée"
     : event.level === "RED" ? "alerte rouge" : "à vérifier";
   return `DriftLight · ${projectLabel(root)} — ${verdict}`;
 }

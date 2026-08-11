@@ -245,8 +245,11 @@ Le titre décrit l'issue réelle du hook, pas la sévérité seule :
 
 | Issue | Titre |
 | --- | --- |
-| Claude Code a effectivement retenu l'action | `DriftLight — action bloquée` |
-| L'événement est enregistré, l'agent poursuit | `DriftLight — modification détectée` |
+| DriftLight a demandé une confirmation | `DriftLight · <projet> — confirmation demandée` |
+| Alerte rouge simplement enregistrée | `DriftLight · <projet> — alerte rouge` |
+| Alerte orange | `DriftLight · <projet> — à vérifier` |
+
+DriftLight ne dit jamais « action bloquée ». Il renvoie une demande de confirmation et n'a aucun moyen de savoir si l'agent hôte l'honore : un mode de permission permissif peut la contourner sans le prévenir. Promettre un blocage qu'on ne contrôle pas transformerait une alerte en fausse sécurité.
 
 Sous Claude Code, `blockOnRed` pilote le dialogue de confirmation existant. Sous Codex, DriftLight observe et notifie ; Codex décide seul d'afficher Autoriser / Refuser selon sa politique native. Les identifiants d'événements restent utiles à l'historique et à `explain`, jamais comme commande d'approbation.
 

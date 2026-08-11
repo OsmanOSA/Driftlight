@@ -1,5 +1,5 @@
 import type { CurrentIntentState, DriftLightConfig, SessionEvent, Severity } from "../domain/types.js";
-import { readCurrentIntentSync } from "../intent/current-intent.js";
+import { readOwnCurrentIntentSync } from "../intent/current-intent.js";
 import { loadNativeBackend, type BackendLoader, type NativeNotification, type NotifierBackend } from "./backend.js";
 import { severityIconPath } from "./icons.js";
 import { notificationMessage, notificationTitle } from "./message.js";
@@ -124,10 +124,12 @@ export async function dispatchNotifications(
     if (pending.length === 0) return decisions;
 
     // La demande d'origine est ce qui rend l'alerte jugeable d'un coup d'œil.
-    // Son absence dégrade le texte sans jamais empêcher la notification.
+    // Son absence dégrade le texte sans jamais empêcher la notification, et
+    // seule la demande de cette session-ci peut être citée : voir
+    // readOwnCurrentIntentSync.
     let intent: CurrentIntentState | null = null;
     try {
-      intent = readCurrentIntentSync(root, sessionId);
+      intent = readOwnCurrentIntentSync(root, sessionId);
     } catch {
       intent = null;
     }

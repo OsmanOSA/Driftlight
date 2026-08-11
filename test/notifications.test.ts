@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { DEFAULT_CONFIG } from "../src/config/config.js";
+import { writeCurrentIntent } from "../src/intent/current-intent.js";
 import type { DriftLightConfig, SessionEvent, Severity } from "../src/domain/types.js";
 import type { BackendLoader, NativeNotification, NotifierBackend } from "../src/notify/backend.js";
 import {
@@ -92,13 +93,13 @@ const config = (overrides: Partial<DriftLightConfig> = {}): DriftLightConfig => 
 test("the notification title states what actually happened, not the severity", () => {
   const root = path.join(os.tmpdir(), "boutique-en-ligne");
   const blocked = buildNotification(root, event("e1", "RED"), config(), true);
-  assert.equal(blocked.title, "DriftLight · boutique-en-ligne — action bloquée");
+  assert.equal(blocked.title, "DriftLight · boutique-en-ligne — confirmation demandée");
   assert.doesNotMatch(blocked.message, /DriftLight (approve|reject)/);
 
   const observed = buildNotification(root, event("e1", "RED"), config(), false);
   assert.doesNotMatch(
     observed.title,
-    /bloqu/,
+    /confirmation/,
     "claiming the action was blocked while the agent keeps working would be a lie",
   );
   assert.match(observed.title, /alerte rouge/);
@@ -194,8 +195,32 @@ test("only the event the hook actually refused is announced as blocked", async (
   });
 
   assert.equal(notifier.sent.length, 2);
-  assert.match(notifier.sent[0]?.title ?? "", /action bloquée$/);
-  assert.doesNotMatch(notifier.sent[1]?.title ?? "", /bloqu/);
+  assert.match(notifier.sent[0]?.title ?? "", /confirmation demandée$/);
+  assert.doesNotMatch(notifier.sent[1]?.title ?? "", /confirmation/);
+});
+
+/**
+ * Régression observée en usage réel : une session sans intention propre
+ * reprenait l'intention partagée du dépôt, et le toast citait une demande
+ * vieille de plusieurs heures — écrite dans une autre session. L'utilisateur
+ * jugeait alors l'alerte sur une phrase qu'il n'avait pas écrite ici.
+ */
+test("a request written in another session is never quoted", async (context) => {
+  const root = await temporaryRoot(context);
+  const notifier = fakeNotifier();
+  await writeCurrentIntent(root, "Nettoie entièrement le dossier legacy");
+
+  await dispatchNotifications(root, [event("e1", "RED")], config(), "claude-autre-session", {
+    loadBackend: notifier.loader,
+    environment: NEUTRAL_ENV,
+  });
+
+  assert.equal(notifier.sent.length, 1);
+  assert.doesNotMatch(
+    notifier.sent[0]?.message ?? "",
+    /legacy/,
+    "mieux vaut ne rien citer que citer la demande d'une autre session",
+  );
 });
 
 // --- Garde d'environnement ----------------------------------------------------
@@ -364,7 +389,7 @@ test("a blocked action notifies again every time the agent proposes it anew", as
 
   assert.equal(notifier.sent.length, 3, "same path, same rule, three blocks, three notifications");
   assert.equal(
-    notifier.sent.every((notification) => /action bloquée$/.test(notification.title)),
+    notifier.sent.every((notification) => /confirmation demandée$/.test(notification.title)),
     true,
   );
 });
@@ -447,7 +472,7 @@ test("the Stop summary surfaces the silenced count, and stays quiet when nothing
 
 test("Windows toast uses argument arrays and a bounded startup window", () => {
   const notification: NativeNotification = {
-    title: "DriftLight — action bloquée",
+    title: "DriftLight — confirmation demandée",
     message: "C:\\Work Folder\\.env\ndestructive-git-command",
     sound: true,
   };
