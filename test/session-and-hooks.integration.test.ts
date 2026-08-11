@@ -216,7 +216,7 @@ test("the classifier reloads current-intent.json between successive turns", asyn
     tool_input: { file_path: path.join(root, ".env"), content: "ONE=1\n" },
   }));
   assertDoesNotBlock(first);
-  assert.equal(readCurrentIntentSync(root)?.turnId, "turn-one");
+  assert.equal(readCurrentIntentSync(root, "claude-integration-hook")?.turnId, "turn-one");
 
   await handleClaudeHook(hook(root, "UserPromptSubmit", {
     prompt: "Fix src/anchor.ts",
@@ -227,7 +227,7 @@ test("the classifier reloads current-intent.json between successive turns", asyn
     tool_input: { file_path: path.join(root, ".env"), content: "TWO=2\n" },
   }));
   assert.equal(second?.hookSpecificOutput?.permissionDecision, "ask");
-  assert.equal(readCurrentIntentSync(root)?.turnId, "turn-two");
+  assert.equal(readCurrentIntentSync(root, "claude-integration-hook")?.turnId, "turn-two");
 });
 
 test("Stop summarizes only orange and red events from the current turn", async (context) => {

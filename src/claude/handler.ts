@@ -163,7 +163,11 @@ export async function handleClaudeHook(input: ClaudeHookInput): Promise<ClaudeHo
       await context.store.save(session);
     }
     if (input.source === "startup" || input.source === "clear") {
-      await writeCurrentIntent(context.root, "", { turnId: `session-${input.session_id}`, resetScope: true });
+      await writeCurrentIntent(context.root, "", {
+        turnId: `session-${input.session_id}`,
+        resetScope: true,
+        sessionId: context.id,
+      });
     }
     return titleOutput(context.root);
   }
@@ -173,7 +177,7 @@ export async function handleClaudeHook(input: ClaudeHookInput): Promise<ClaudeHo
   if (input.hook_event_name === "UserPromptSubmit") {
     if (input.prompt) {
       setCurrentIntent(session, input.prompt, "user-follow-up");
-      await writeCurrentIntent(session.cwd, input.prompt, { turnId: input.prompt_id });
+      await writeCurrentIntent(session.cwd, input.prompt, { turnId: input.prompt_id, sessionId: session.id });
     }
     await store.save(session);
     return undefined;
@@ -182,7 +186,7 @@ export async function handleClaudeHook(input: ClaudeHookInput): Promise<ClaudeHo
   if (input.hook_event_name === "PreToolUse") {
     const events: SessionEvent[] = [];
     if (input.tool_name && isPlanTool(input.tool_name)) {
-      const intent = readCurrentIntentSync(session.cwd);
+      const intent = readCurrentIntentSync(session.cwd, session.id);
       if (intent) {
         recordDeclaredPlanPaths(
           session,
@@ -196,7 +200,7 @@ export async function handleClaudeHook(input: ClaudeHookInput): Promise<ClaudeHo
       const findings = classifyCommand(command, session.baseline);
       if (findings.length > 0) {
         const event = eventFromFindings("proposed-action", findings, session.cwd, command.slice(0, 160));
-        const intent = readCurrentIntentSync(session.cwd);
+        const intent = readCurrentIntentSync(session.cwd, session.id);
         if (intent) {
           event.intentVersion = intent.version;
           event.turnId = intent.turnId;
@@ -265,7 +269,7 @@ export async function handleClaudeHook(input: ClaudeHookInput): Promise<ClaudeHo
 
   if (input.hook_event_name === "PostToolUse" || input.hook_event_name === "FileChanged") {
     if (input.hook_event_name === "PostToolUse" && input.tool_name && isReadLikeTool(input.tool_name)) {
-      const intent = readCurrentIntentSync(session.cwd);
+      const intent = readCurrentIntentSync(session.cwd, session.id);
       const paths = extractReadPaths(
         session.cwd,
         input.tool_input,
@@ -289,7 +293,7 @@ export async function handleClaudeHook(input: ClaudeHookInput): Promise<ClaudeHo
   }
 
   if (input.hook_event_name === "Stop") {
-    const intent = readCurrentIntentSync(session.cwd);
+    const intent = readCurrentIntentSync(session.cwd, session.id);
     if (!intent) return undefined;
     const summary = formatStopSummary(
       session.events,

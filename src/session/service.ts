@@ -213,8 +213,9 @@ export function classifyProposedFileChange(
   const change = changeFromAbsolutePath(session.cwd, absolutePath, kind);
   if (!change) return null;
   change.before = session.lastSnapshot.files[change.path];
-  const currentIntent = readCurrentIntentSync(session.cwd);
+  const currentIntent = readCurrentIntentSync(session.cwd, session.id);
   const classification = classifier.classify({
+    sessionId: session.id,
     root: session.cwd,
     change,
     baseline: session.baseline,
@@ -302,12 +303,13 @@ export function processChanges(
   currentSnapshot: RepositorySnapshot,
   classifier: Classifier = new DeterministicClassifier(),
 ): SessionEvent[] {
-  const currentIntent = readCurrentIntentSync(session.cwd);
+  const currentIntent = readCurrentIntentSync(session.cwd, session.id);
   const count = turnTouchedPathCount(session, currentIntent?.turnId, changes);
   const deletionCount = deletedPathCount(session, changes);
   const events: SessionEvent[] = [];
   for (const change of changes) {
     const classification: Classification = classifier.classify({
+      sessionId: session.id,
       root: session.cwd,
       change,
       baseline: session.baseline,

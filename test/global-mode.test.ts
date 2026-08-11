@@ -77,7 +77,8 @@ test("an observed repository never receives DriftLight state", async (context) =
 
   const state = projectStateDirectory(root);
   assert.ok(state.startsWith(driftlightHome()), "l'état vit sous la racine DriftLight de la machine");
-  assert.ok(existsSync(path.join(state, "current-intent.json")));
+  // L'intention appartient à la session, pas au dépôt.
+  assert.ok(existsSync(path.join(state, "intents", "claude-global-mode.json")));
   assert.ok(await new SessionStore(root).load("claude-global-mode"));
 });
 

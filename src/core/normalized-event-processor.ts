@@ -130,6 +130,7 @@ export class NormalizedEventProcessor {
       await writeCurrentIntent(root, "", {
         turnId: nativeTurnId(event) ?? `session-${safeIdentifier(event.session_id)}`,
         resetScope: true,
+        sessionId: id,
       });
     }
   }
@@ -139,7 +140,7 @@ export class NormalizedEventProcessor {
     if (prompt === undefined) return;
     const { store, session } = await this.context(event);
     setCurrentIntent(session, prompt, "user-follow-up");
-    await writeCurrentIntent(session.cwd, prompt, { turnId: nativeTurnId(event) });
+    await writeCurrentIntent(session.cwd, prompt, { turnId: nativeTurnId(event), sessionId: session.id });
     await store.save(session);
   }
 
@@ -150,7 +151,7 @@ export class NormalizedEventProcessor {
     const findings = classifyCommand(command, session.baseline);
     if (findings.length === 0) return;
     const candidate = eventFromFindings("proposed-action", findings, session.cwd, command.slice(0, 160));
-    const intent = readCurrentIntentSync(session.cwd);
+    const intent = readCurrentIntentSync(session.cwd, session.id);
     if (intent) {
       candidate.intentVersion = intent.version;
       candidate.turnId = intent.turnId;
@@ -191,7 +192,7 @@ export class NormalizedEventProcessor {
 
   private async planDeclared(event: ScopeLightEvent): Promise<void> {
     const { store, session } = await this.context(event);
-    const intent = readCurrentIntentSync(session.cwd);
+    const intent = readCurrentIntentSync(session.cwd, session.id);
     if (!intent) return;
     const paths = Array.isArray(event.payload.paths)
       ? event.payload.paths.filter((item): item is string => typeof item === "string")
@@ -208,7 +209,7 @@ export class NormalizedEventProcessor {
         ? event.payload.readFiles.filter((item): item is string => typeof item === "string")
         : [];
       const known = new Set(Object.keys(session.lastSnapshot.files));
-      const intent = readCurrentIntentSync(session.cwd);
+      const intent = readCurrentIntentSync(session.cwd, session.id);
       if (intent) {
         for (const filePath of candidates) {
           const absolutePath = path.isAbsolute(filePath) ? path.resolve(filePath) : path.resolve(session.cwd, filePath);

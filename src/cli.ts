@@ -82,7 +82,11 @@ async function runStart(args: string[]): Promise<void> {
 
   const session = await createSession({ cwd, task, source: "cli" });
   const store = new SessionStore(session.cwd);
-  await writeCurrentIntent(session.cwd, task, { turnId: `cli-${session.id}`, resetScope: true });
+  await writeCurrentIntent(session.cwd, task, {
+    turnId: `cli-${session.id}`,
+    resetScope: true,
+    sessionId: session.id,
+  });
   await store.save(session);
   console.log(`DriftLight · surveillance locale active`);
   console.log(`   ${session.id} · ${session.baseline.branch ?? "hors Git"} · ${session.baseline.files.length} changement(s) préexistant(s) protégé(s)`);
@@ -191,7 +195,7 @@ async function runAddScope(args: string[]): Promise<void> {
   if (!text.trim()) throw new Error("Indiquez l'instruction ou le chemin à ajouter au scope.");
   const { store, session } = await requestedSession(args);
   addIntent(session, text, "manual-scope");
-  await addCurrentScope(session.cwd, text);
+  await addCurrentScope(session.cwd, text, session.id);
   await store.save(session);
   console.log(`✓ Scope actif mis à jour (version ${session.intents.length}) : ${text}`);
 }

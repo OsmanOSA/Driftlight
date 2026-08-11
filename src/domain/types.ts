@@ -117,6 +117,12 @@ export interface Classification {
 
 export interface ClassificationInput {
   root: string;
+  /**
+   * Session à l'origine du changement. L'intention courante lui appartient :
+   * sans cette identité, deux sessions ouvertes sur le même dépôt seraient
+   * classées avec la demande de la dernière à avoir parlé.
+   */
+  sessionId?: string;
   change: ObservedChange;
   baseline: GitBaseline;
   initialSnapshot: RepositorySnapshot;

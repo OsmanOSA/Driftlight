@@ -18,7 +18,7 @@ export class DeterministicClassifier implements Classifier {
   public readonly name = "deterministic-local-v2";
 
   public classify(input: ClassificationInput): Classification {
-    const intent = readCurrentIntentSync(input.root);
+    const intent = readCurrentIntentSync(input.root, input.sessionId);
     const config = loadConfigSync(input.root);
     const scoringConfig = loadScoringConfigSync(input.root);
     const cachedProfile = readRepoProfileSync(input.root);

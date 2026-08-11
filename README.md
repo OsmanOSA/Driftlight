@@ -87,7 +87,9 @@ Le hook `PreToolUse` classe les écritures et commandes proposées. Sur rouge, i
 
 Les hooks joignent par ailleurs un champ `terminalSequence` à leur réponse pour le titre du terminal (voir plus bas). Ce champ est purement additif : il ne retient jamais une action, et une version de Claude Code qui ne le connaîtrait pas l'ignore sans conséquence.
 
-Chaque `UserPromptSubmit` écrit atomiquement `current-intent.json`. Le classifieur relit directement ce fichier au moment de chaque décision, sans propagation entre processus. Un fichier explicitement nommé est donc exempté, y compris s'il est sensible.
+Chaque `UserPromptSubmit` écrit atomiquement l'intention de **sa** session, sous `intents/<session>.json`. Le classifieur relit directement ce fichier au moment de chaque décision, sans propagation entre processus. Un fichier explicitement nommé est donc exempté, y compris s'il est sensible.
+
+L'intention appartient à la session, pas au dépôt : deux fenêtres de l'agent ouvertes sur le même projet poursuivent deux demandes différentes. Chacune est jugée sur la sienne, et la demande de l'une ne peut ni déclencher une alerte chez l'autre, ni blanchir une destruction commise hors de son périmètre.
 
 La protection absolue du travail Git préexistant ne signale pas une édition ordinaire. Elle exige simultanément une baseline non commitée, un fichier hors intention et une suppression ou réécriture intégrale. Le verdict est alors toujours ROUGE, même si le fichier a été lu ou cité dans le plan de l'agent. Une seule alerte absolue est conservée par fichier et par tour.
 

@@ -128,7 +128,7 @@ test("l'entrée Codex alimente intention, classifieur, statut, historique et not
     && event.ruleId === "preexisting-file-deleted"
   );
   assert.equal(alert?.level, "RED");
-  assert.equal(readCurrentIntentSync(root)?.turnId, "turn-drift");
+  assert.equal(readCurrentIntentSync(root, "codex-thread-pipeline")?.turnId, "turn-drift");
   assert.equal(readCurrentStatusSync(root).level, "RED");
   assert.equal(notifications.length, 1);
   assert.equal(notifications[0]?.title, "DriftLight — modification détectée");
