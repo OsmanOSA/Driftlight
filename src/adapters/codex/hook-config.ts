@@ -154,17 +154,6 @@ export async function readJsonObject(target: string): Promise<CodexHooksDocument
   }
 }
 
-export async function writeJsonAtomic(target: string, value: unknown): Promise<void> {
-  await fs.mkdir(path.dirname(target), { recursive: true });
-  const temporary = `${target}.${process.pid}.${Date.now()}.tmp`;
-  await fs.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  try {
-    await fs.rename(temporary, target);
-  } catch (error) {
-    await fs.rm(temporary, { force: true }).catch(() => undefined);
-    throw error;
-  }
-}
 
 export function quotePosixArgument(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
@@ -235,3 +224,5 @@ export function buildCodexHookCommands(
     commandWindows: windows,
   };
 }
+
+export { writeJsonAtomic } from "../../shared/atomic-write.js";

@@ -7,6 +7,7 @@ import { readFeedbackStats } from "../src/classification/feedback-stats.js";
 import type { SessionRecord } from "../src/domain/types.js";
 import { markEventFeedback } from "../src/session/service.js";
 import { formatSessionSummary, formatSignal } from "../src/ui/terminal.js";
+import { boundSessionHistory } from "../src/session/store.js";
 
 function breakdown(level: "GREEN" | "ORANGE" | "RED", ruleId: string) {
   return {
@@ -77,4 +78,27 @@ test("feedback persists behavior precision counters across sessions", async (con
   assert.deepEqual(stats.totals, { noise: 0, useful: 1 });
   assert.deepEqual(stats.byStage.behavior, { noise: 0, useful: 1 });
   assert.deepEqual(stats.bySignal["dependency-added"], { noise: 0, useful: 1 });
+});
+
+/**
+ * Régression : une session accumulait ses événements sans borne — 84 % du
+ * volume étaient des verts jamais affichés, dans des fichiers de 387 Ko.
+ */
+test("session history is bounded without ever discarding an alert", async () => {
+  const session = {
+    id: "bounded",
+    events: [
+      ...Array.from({ length: 900 }, (_, index) => ({ id: `green-${index}`, level: "GREEN" })),
+      { id: "orange-1", level: "ORANGE" },
+      { id: "red-1", level: "RED" },
+    ],
+  } as unknown as SessionRecord;
+
+  boundSessionHistory(session);
+
+  const kept = session.events;
+  assert.equal(kept.filter((event) => event.level === "GREEN").length, 300);
+  assert.ok(kept.some((event) => event.id === "orange-1"), "les alertes survivent toujours");
+  assert.ok(kept.some((event) => event.id === "red-1"));
+  assert.equal(kept.at(-3)?.id, "green-899", "les verts conservés sont les plus récents");
 });

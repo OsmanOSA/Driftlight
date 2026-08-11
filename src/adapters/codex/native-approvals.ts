@@ -194,14 +194,4 @@ export async function readTextFile(target: string): Promise<string | null> {
   }
 }
 
-export async function writeTextAtomic(target: string, source: string): Promise<void> {
-  await fs.mkdir(path.dirname(target), { recursive: true });
-  const temporary = `${target}.${process.pid}.${Date.now()}.tmp`;
-  await fs.writeFile(temporary, source, "utf8");
-  try {
-    await fs.rename(temporary, target);
-  } catch (error) {
-    await fs.rm(temporary, { force: true }).catch(() => undefined);
-    throw error;
-  }
-}
+export { writeFileAtomic as writeTextAtomic } from "../../shared/atomic-write.js";
