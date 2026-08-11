@@ -152,6 +152,15 @@ sans empêcher un projet de diverger :
 
 ## Intégration Codex globale
 
+Le corpus adverse est rejoué à l'identique par Claude Code et par Codex : une
+dérive attrapée d'un côté et manquée de l'autre est un angle mort, pas une
+différence d'implémentation acceptable. Un seul écart subsiste, déclaré dans les
+scénarios et couvert par un test dédié — un `apply_patch` décrit un delta, donc
+le contenu résultant d'un manifeste n'existe qu'une fois le patch appliqué, et
+l'ajout de dépendance est alors détecté à l'étape suivante plutôt qu'à la
+proposition. L'ampleur réelle d'un patch, elle, est lue depuis son corps : sans
+cela une réécriture intégrale sous Codex se présentait comme une simple édition.
+
 L'adapter Codex transforme les hooks natifs Codex en protocole DriftLight versionné puis les remet au même pipeline Core que les autres agents : session, intention courante, classification, statut, historique et notifications natives. L'adapter ne classe pas, ne modifie pas les entrées d'outil et n'ouvre aucun port réseau. `inbox/codex/` conserve en plus les enveloppes normalisées minimales pour le diagnostic local.
 
 Après le build, connectez Codex une seule fois :

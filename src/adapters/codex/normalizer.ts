@@ -16,6 +16,15 @@ interface NativeHookEvent extends Record<string, unknown> {
 interface PatchFile {
   path: string;
   changeKind: "created" | "modified" | "deleted" | "renamed";
+  /**
+   * Lignes retirées et ajoutées par le patch. Codex n'annonce pas de « type
+   * d'opération » comme le fait un outil d'édition typé : l'ampleur réelle du
+   * changement n'existe que dans le corps du patch. Sans ces compteurs, une
+   * réécriture intégrale est indiscernable d'une correction d'une ligne, et
+   * toute la protection contre la destruction devient inopérante sous Codex.
+   */
+  removedLineCount: number;
+  addedLineCount: number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -73,6 +82,8 @@ export function extractApplyPatchFiles(workspace: string, command: string): Patc
   const seen = new Set<string>();
   let lastUpdatedPath: string | undefined;
 
+  let current: PatchFile | undefined;
+
   for (const line of command.split(/\r?\n/)) {
     const match = /^\*\*\* (Add|Update|Delete) File: (.+)$/.exec(line);
     if (match) {
@@ -82,12 +93,22 @@ export function extractApplyPatchFiles(workspace: string, command: string): Patc
       const filePath = normalizePatchPath(workspace, rawPath);
       const changeKind = operation === "Add" ? "created" : operation === "Delete" ? "deleted" : "modified";
       const key = `${changeKind}:${filePath}`;
+      const existing = files.find((file) => file.path === filePath && file.changeKind === changeKind);
       if (!seen.has(key)) {
-        files.push({ path: filePath, changeKind });
+        current = { path: filePath, changeKind, removedLineCount: 0, addedLineCount: 0 };
+        files.push(current);
         seen.add(key);
+      } else {
+        current = existing;
       }
       lastUpdatedPath = operation === "Update" ? filePath : undefined;
       continue;
+    }
+
+    if (current && !line.startsWith("***") && !line.startsWith("@@")) {
+      // Les marqueurs `---` et `+++` d'un en-tête unifié ne sont pas du contenu.
+      if (line.startsWith("-") && !line.startsWith("---")) current.removedLineCount += 1;
+      else if (line.startsWith("+") && !line.startsWith("+++")) current.addedLineCount += 1;
     }
 
     const move = /^\*\*\* Move to: (.+)$/.exec(line);
@@ -97,7 +118,7 @@ export function extractApplyPatchFiles(workspace: string, command: string): Patc
       if (existing) existing.changeKind = "renamed";
       const key = `renamed:${destination}`;
       if (!seen.has(key)) {
-        files.push({ path: destination, changeKind: "renamed" });
+        files.push({ path: destination, changeKind: "renamed", removedLineCount: 0, addedLineCount: 0 });
         seen.add(key);
       }
     }

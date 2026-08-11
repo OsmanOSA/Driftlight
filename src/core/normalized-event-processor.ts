@@ -43,6 +43,10 @@ function string(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+function number(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
 function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -171,13 +175,28 @@ export class NormalizedEventProcessor {
     if (!isInsideRoot(root, absolutePath)) return;
     const relativePath = path.relative(root, absolutePath).replaceAll("\\", "/");
     const kind = proposedKind(event.payload.changeKind, Boolean(session.lastSnapshot.files[relativePath]));
-    const operation = event.payload.changeKind === "renamed" ? "rename" : "edit";
+    const removedLineCount = number(event.payload.removedLineCount);
+
+    // Un patch qui retire tout le contenu existant est une réécriture, quel que
+    // soit le mot employé par l'agent pour la décrire. Sans cette lecture, une
+    // destruction intégrale sous Codex se présentait comme une simple édition et
+    // échappait à la protection du travail préexistant.
+    //
+    // Un fichier d'une seule ligne fait exception : y corriger cette ligne et
+    // la réécrire produisent exactement le même patch. L'information n'existe
+    // pas, et prétendre la lire ne ferait qu'inventer des alertes.
+    const previousLineCount = session.lastSnapshot.files[relativePath]?.lineCount ?? 0;
+    const rewritesWholeFile = previousLineCount > 1 && removedLineCount >= previousLineCount;
+    const operation = event.payload.changeKind === "renamed"
+      ? "rename"
+      : rewritesWholeFile ? "write" : "edit";
+
     const candidate = classifyProposedFileChange(
       session,
       absolutePath,
       kind,
       operation,
-      0,
+      removedLineCount,
       undefined,
       undefined,
       this.classifier,
