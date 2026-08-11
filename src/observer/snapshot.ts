@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type {
@@ -53,6 +54,32 @@ export interface ScanOptions {
   excludeDirectories?: ReadonlySet<string>;
 }
 
+/**
+ * Répertoires que `.gitignore` exclut entièrement, demandés à Git.
+ *
+ * La liste d'exclusions en dur ne connaît que huit dossiers. Elle suffisait sur
+ * un dépôt choisi ; installée sur toute la machine, elle ferait parcourir et
+ * hacher `.venv/`, `vendor/`, `Library/` ou `build/` à chaque appel d'outil.
+ *
+ * Seuls les *répertoires* sont élagués, jamais les fichiers. Un fichier ignoré
+ * isolé reste observé — `.env` l'est dans presque tous les projets, et c'est
+ * précisément la catégorie que DriftLight doit protéger. `--directory` demande
+ * à Git de replier un dossier entièrement ignoré en une seule entrée au lieu de
+ * l'énumérer, ce qui est aussi ce qui rend l'appel bon marché.
+ */
+function listIgnoredDirectories(root: string): Promise<ReadonlySet<string>> {
+  return new Promise((resolve) => {
+    execFile(
+      "git",
+      ["-C", root, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"],
+      { encoding: "utf8", windowsHide: true, maxBuffer: 64 * 1024 * 1024 },
+      (error, stdout) => resolve(new Set(
+        error ? [] : stdout.split("\0").filter((entry) => entry.endsWith("/")).map((entry) => entry.slice(0, -1)),
+      )),
+    );
+  });
+}
+
 export async function scanRepository(
   root: string,
   options: ScanOptions = {},
@@ -60,6 +87,7 @@ export async function scanRepository(
   const files: RepositorySnapshot["files"] = {};
   const manifests: RepositorySnapshot["manifests"] = {};
   const excluded = options.excludeDirectories ?? EXCLUDED_DIRECTORIES;
+  let ignoredDirectories: ReadonlySet<string> = new Set();
 
   async function walk(directory: string): Promise<void> {
     let entries;
@@ -73,27 +101,34 @@ export async function scanRepository(
       entries.map(async (entry) => {
         const absolutePath = path.join(directory, entry.name);
         if (entry.isDirectory()) {
-          if (!excluded.has(entry.name)) await walk(absolutePath);
+          const relative = relativeRepoPath(root, absolutePath);
+          if (!excluded.has(entry.name) && !ignoredDirectories.has(relative)) await walk(absolutePath);
           return;
         }
         if (!entry.isFile()) return;
 
-        try {
-          const stat = await fs.stat(absolutePath);
-          const relativePath = relativeRepoPath(root, absolutePath);
-          const inspection = await inspectFile(absolutePath);
-          files[relativePath] = { ...inspection, size: stat.size };
-          if (entry.name === "package.json") {
-            manifests[relativePath] = await readManifest(absolutePath);
-          }
-        } catch {
-          // The file may disappear between readdir and hashing. The next scan resolves it.
-        }
+        await inspect(absolutePath, entry.name);
       }),
     );
   }
 
-  await walk(path.resolve(root));
+  async function inspect(absolutePath: string, name: string): Promise<void> {
+    try {
+      const stat = await fs.stat(absolutePath);
+      const relativePath = relativeRepoPath(root, absolutePath);
+      files[relativePath] = { ...await inspectFile(absolutePath), size: stat.size };
+      if (name === "package.json") manifests[relativePath] = await readManifest(absolutePath);
+    } catch {
+      // Le fichier peut disparaître entre l'inventaire et la lecture — ou être
+      // suivi par Git sans exister sur le disque. Le prochain scan tranche.
+    }
+  }
+
+  const resolvedRoot = path.resolve(root);
+  ignoredDirectories = options.excludeDirectories
+    ? new Set()
+    : await listIgnoredDirectories(resolvedRoot);
+  await walk(resolvedRoot);
   return { capturedAt: new Date().toISOString(), files, manifests };
 }
 
