@@ -3,6 +3,7 @@ import path from "node:path";
 import { claudeSettingsPath, isInstalledPackage } from "../claude/installer.js";
 import { loadScoringConfigSync } from "../config/scoring-config.js";
 import { resolveObservableRoot } from "../git/baseline.js";
+import { identityStatus } from "../notify/identity.js";
 import { readJsonState } from "../shared/read-state.js";
 import { driftlightHome } from "../shared/state-paths.js";
 import { listProjects, projectsDirectory } from "./projects.js";
@@ -111,6 +112,28 @@ export async function diagnose(cwd: string): Promise<Check[]> {
         detail: degraded.map((project) => `${path.basename(project.directory)} : ${project.degraded}`).join(", "),
         remedy: "DRIFTLIGHT_DEBUG=1 pour voir la cause au prochain déclenchement.",
       });
+
+  const identity = identityStatus();
+  if (identity.supported) {
+    checks.push(identity.installed
+      ? { status: "ok", label: "Identité de notification", detail: identity.appId }
+      : {
+          status: "info",
+          label: "Identité de notification",
+          detail: "empruntée à la bibliothèque d'envoi ; l'en-tête n'affiche pas DriftLight",
+          remedy: "driftlight notify install — écrit un raccourci retirable dans le menu Démarrer.",
+        });
+  } else if (process.platform === "darwin") {
+    // La persistance d'une notification macOS est un réglage par application,
+    // que rien dans la charge utile ne peut imposer. Le dire vaut mieux que de
+    // laisser croire que l'outil peut la garantir.
+    checks.push({
+      status: "info",
+      label: "Notifications macOS",
+      detail: "la durée d'affichage dépend du style choisi dans les réglages du système",
+      remedy: "Réglages › Notifications › (application d'envoi) › style « Alertes » pour qu'elles persistent.",
+    });
+  }
 
   checks.push({
     status: existsSync(path.join(home, "config.json")) ? "ok" : "info",

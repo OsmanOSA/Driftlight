@@ -11,6 +11,9 @@ import {
   LEARNING_NOISE_RATIO,
 } from "./classification/adaptation.js";
 import { feedbackStatsPath, readFeedbackStats } from "./classification/feedback-stats.js";
+import { loadNativeBackend, type NativeNotification } from "./notify/backend.js";
+import { severityIconPath } from "./notify/icons.js";
+import { identityStatus, installIdentity, removeIdentity } from "./notify/identity.js";
 import { loadScoringConfigSync } from "./config/scoring-config.js";
 import { runHookSafely, type SafeHookOutcome } from "./claude/safe-hook.js";
 import { installClaudeHooks, isInstalledPackage } from "./claude/installer.js";
@@ -75,6 +78,7 @@ Commandes :
   driftlight projects [--purge]        # état de tous les projets de la machine
   driftlight doctor [--cwd .]          # diagnostic de l'installation
   driftlight learning [--reset] [--cwd .]  # ce que DriftLight a appris de vos retours
+  driftlight notify [status|install|uninstall|test]  # identité et aperçu des notifications
   driftlight hook                       # appelé par Claude Code via stdin JSON
 
 Tout reste local, sur cette machine uniquement. L'état par projet est rangé sous
@@ -393,6 +397,57 @@ async function runLearning(args: string[]): Promise<void> {
   console.log("\nLes signaux rouges ne sont jamais neutralisables. `--reset` annule tout.");
 }
 
+async function runNotify(args: string[]): Promise<void> {
+  const action = args[1] ?? "status";
+  if (action === "install") {
+    const outcome = await installIdentity();
+    console.log(`${outcome.ok ? "✓" : "✗"} ${outcome.detail}`);
+    return;
+  }
+  if (action === "uninstall") {
+    const outcome = await removeIdentity();
+    console.log(`${outcome.ok ? "✓" : "✗"} ${outcome.detail}`);
+    return;
+  }
+  if (action === "test") {
+    const level = args.includes("--orange") ? "ORANGE" : "RED";
+    const icon = severityIconPath(level);
+    await dispatchPreviewNotification({
+      title: `DriftLight · ${path.basename(process.cwd())} — ${level === "RED" ? "action refusée" : "à vérifier"}`,
+      message: "Réécriture d'un fichier contenant du travail non sauvegardé : src/exemple.ts\n"
+        + "Vous aviez demandé : « Corrige la faute de frappe dans src/app.ts »\n"
+        + "Refusez maintenant : ce contenu n'existe nulle part ailleurs.",
+      sound: true,
+      persistent: true,
+      attribution: "DriftLight — voyant local de dérive",
+      ...(icon ? { icon } : {}),
+    });
+    console.log("✓ Notification d'essai envoyée.");
+    return;
+  }
+
+  const status = identityStatus();
+  if (!status.supported) {
+    console.log("Identité d'application : propre à Windows ; sans objet ici.");
+    return;
+  }
+  console.log(`DriftLight · identité de notification`);
+  console.log(`  ${status.installed ? "✓" : "·"} ${status.installed ? status.appId : "identité par défaut de la bibliothèque d'envoi"}`);
+  console.log(`  raccourci : ${status.shortcut}`);
+  if (!status.installed) {
+    console.log("\n`driftlight notify install` fait apparaître DriftLight, son icône et son nom");
+    console.log("en en-tête des notifications. Écrit un raccourci dans votre menu Démarrer,");
+    console.log("retirable par `driftlight notify uninstall`.");
+  }
+}
+
+/** Envoi direct, sans passer par le journal anti-répétition ni par une session. */
+async function dispatchPreviewNotification(notification: NativeNotification): Promise<void> {
+  const backend = await loadNativeBackend();
+  if (!backend) throw new Error("Aucune bibliothèque de notification disponible.");
+  await backend.send(notification);
+}
+
 async function runHook(): Promise<void> {
   const raw = await readStdin();
   const outcome = await runHookSafely(raw);
@@ -419,6 +474,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     case "projects": await runProjects(args); break;
     case "doctor": await runDoctor(args); break;
     case "learning": await runLearning(args); break;
+    case "notify": await runNotify(args); break;
     case "hook": await runHook(); break;
     case "help":
     case "--help":

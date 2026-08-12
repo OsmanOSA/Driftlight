@@ -260,6 +260,26 @@ const DESTRUCTIVE_COMMANDS: Scenario[] = [
     expect: "RED",
     rule: "destructive-file-command",
   },
+  {
+    // Régression trouvée par DriftLight sur son propre développement : une
+    // invocation de commande était lue comme une valeur littérale. Le risque
+    // n'est pas le bruit, mais le silence — un nom de commande ressemblant à un
+    // chemin absolu aurait fait passer la suppression pour extérieure.
+    name: "une variable issue d'une commande, non d'un littéral",
+    why: "on ne peut pas savoir où pointe une variable calculée : l'inconnu doit rester prudent",
+    intent: "Nettoie les raccourcis",
+    steps: [{ bash: '$cible = Join-Path $env:APPDATA "Raccourcis"\nRemove-Item $cible -Force' }],
+    expect: "RED",
+    rule: "destructive-file-command",
+  },
+  {
+    name: "une variable issue d'une substitution de commande",
+    why: "la forme POSIX du même piège doit être couverte au même titre",
+    intent: "Nettoie le dossier courant",
+    steps: [{ bash: 'DIR=$(basename src)\nrm -rf "$DIR"' }],
+    expect: "RED",
+    rule: "destructive-file-command",
+  },
 ];
 
 /** D — Actions sur des systèmes réels, hors du dépôt. */

@@ -19,8 +19,16 @@ import {
   SILENCE_WINDOW_MS,
   suppressedByCap,
 } from "../src/notify/notified-log.js";
-import { severityIconPath } from "../src/notify/icons.js";
-import { WINDOWS_TOAST_STARTUP_MS, windowsToastArguments } from "../src/notify/windows-toast.js";
+import { appIconPath, severityIconPath } from "../src/notify/icons.js";
+import { identityStatus } from "../src/notify/identity.js";
+import {
+  buildToastXml,
+  DEFAULT_TOAST_APP_ID,
+  richToastScript,
+  toastAppId,
+  WINDOWS_TOAST_STARTUP_MS,
+  windowsToastArguments,
+} from "../src/notify/windows-toast.js";
 import { formatStopSummary } from "../src/ui/terminal.js";
 
 const SESSION = "claude-session-1";
@@ -524,6 +532,89 @@ test("a severity badge is attached only when the file really exists", () => {
   assert.ok(!windowsToastArguments(base).includes("-p"));
 });
 
+// --- Toast Windows enrichi ----------------------------------------------------
+
+const richNotification: NativeNotification = {
+  title: "DriftLight · projet — action refusée",
+  message: "Réécriture d'un fichier : src/legacy.ts\nVous aviez demandé : « Corrige & range »\nRefusez maintenant.",
+  sound: true,
+  persistent: true,
+  attribution: "DriftLight — voyant local de dérive",
+};
+
+/**
+ * Le contenu vient de l'utilisateur : un chemin ou une demande contenant `&`
+ * ou `<` rendrait le document invalide, et Windows n'afficherait alors rien du
+ * tout — une alerte perdue pour une apostrophe.
+ */
+test("user content is escaped before it reaches the toast document", () => {
+  const xml = buildToastXml({
+    ...richNotification,
+    title: 'Projet <script> & "guillemets"',
+    message: "Chemin : src/a&b.ts\nDemande : « ' »",
+  });
+  assert.ok(!/<script>/.test(xml), "aucune balise ne doit survivre au contenu utilisateur");
+  assert.match(xml, /&amp;/);
+  assert.match(xml, /&lt;script&gt;/);
+  assert.match(xml, /&quot;/);
+});
+
+/**
+ * ToastGeneric n'accepte que quatre éléments de texte. Au-delà, Windows rejette
+ * le document entier : dépasser le budget ne dégraderait pas la notification,
+ * il la ferait disparaître.
+ */
+test("the toast never exceeds the four text elements Windows accepts", () => {
+  const xml = buildToastXml({
+    ...richNotification,
+    message: ["une", "deux", "trois", "quatre", "cinq"].join("\n"),
+  });
+  assert.equal((xml.match(/<text/g) ?? []).length, 4);
+  assert.ok(!xml.includes("quatre"), "le contenu excédentaire est coupé, pas empilé");
+});
+
+test("the attribution yields its place to the content when the budget is tight", () => {
+  const dense = buildToastXml(richNotification);
+  assert.ok(!dense.includes("placement=\"attribution\""), "trois lignes de corps saturent le budget");
+
+  const sparse = buildToastXml({ ...richNotification, message: "une seule ligne" });
+  assert.match(sparse, /placement="attribution"/);
+});
+
+/**
+ * Une alerte qui retient une action ne doit pas pouvoir s'effacer pendant qu'on
+ * regarde ailleurs : c'est exactement le moment où elle sert.
+ */
+test("an alert that holds an action stays until it is dismissed", () => {
+  assert.match(buildToastXml(richNotification), /scenario="reminder"/);
+  assert.match(buildToastXml({ ...richNotification, persistent: false }), /duration="long"/);
+  assert.match(buildToastXml(richNotification), /activationType="system" arguments="dismiss"/);
+});
+
+test("a silent notification says so in the document itself", () => {
+  assert.match(buildToastXml({ ...richNotification, sound: false }), /<audio silent="true"\/>/);
+  assert.ok(!buildToastXml(richNotification).includes("<audio"));
+});
+
+test("the PowerShell payload survives any quoting through base64", () => {
+  const xml = buildToastXml({ ...richNotification, title: "Guillemets ' et \" mêlés" });
+  const script = richToastScript(xml, "Some.App.Id");
+  const encoded = /FromBase64String\('([^']+)'\)/.exec(script)?.[1];
+  assert.ok(encoded, "la charge utile doit être encodée");
+  assert.equal(Buffer.from(encoded, "base64").toString("utf8"), xml);
+});
+
+test("the toast identity follows the environment override", () => {
+  assert.equal(toastAppId({ DRIFTLIGHT_TOAST_APPID: "Mon.Identite" }), "Mon.Identite");
+  assert.equal(toastAppId({ DRIFTLIGHT_TOAST_APPID: "   " }), DEFAULT_TOAST_APP_ID);
+});
+
+test("the application identity is reported as unsupported off Windows", () => {
+  const status = identityStatus("darwin");
+  assert.equal(status.supported, false);
+  assert.equal(status.installed, false);
+});
+
 test("the severity badges shipped with the package are valid PNG files", async () => {
   for (const level of ["RED", "ORANGE"] as const) {
     const file = severityIconPath(level);
@@ -534,9 +625,32 @@ test("the severity badges shipped with the package are valid PNG files", async (
       [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
       "un PNG invalide supprimerait la notification au lieu de la décorer",
     );
-    assert.equal(header.readUInt32BE(16), 128);
+    assert.equal(header.readUInt32BE(16), 256, "Windows recadre en cercle : l'image doit rester nette");
   }
   assert.equal(severityIconPath("GREEN"), undefined, "le vert ne notifie jamais");
+});
+
+/**
+ * Windows lit l'icône du raccourci pour l'en-tête de la notification. Un ICO
+ * absent ou mal formé ferait retomber DriftLight sur l'icône de l'exécutable
+ * qui l'a lancé — c'est-à-dire sur celle de Node.
+ */
+test("the application icon ships as both PNG and a well-formed ICO", async () => {
+  const png = appIconPath("png");
+  const ico = appIconPath("ico");
+  assert.ok(png && ico, "les deux formes doivent être livrées");
+  const buffer = await fs.readFile(ico);
+  assert.equal(buffer.readUInt16LE(0), 0, "champ réservé");
+  assert.equal(buffer.readUInt16LE(2), 1, "type icône");
+  assert.equal(buffer.readUInt16LE(4), 1, "une image");
+  const length = buffer.readUInt32LE(14);
+  const offset = buffer.readUInt32LE(18);
+  assert.equal(offset + length, buffer.length, "l'entrée doit couvrir exactement le fichier");
+  assert.deepEqual(
+    [...buffer.subarray(offset, offset + 8)],
+    [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+    "l'ICO encapsule un PNG",
+  );
 });
 
 test("orange does not notify under the default configuration", async (context) => {

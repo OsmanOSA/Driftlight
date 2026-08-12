@@ -164,7 +164,14 @@ function severityFor(config: ScoringConfig, id: string): Severity {
  */
 function shellAssignments(command: string): Map<string, string> {
   const values = new Map<string, string>();
-  const pattern = /(?:^|\n|;|&&|\|\|)\s*\$?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*("[^"\n]*"|'[^'\n]*'|[^\s;&|]+)/g;
+  // La valeur doit occuper à elle seule la fin du segment. Sans cette borne,
+  // `$chemin = Join-Path $env:APPDATA "x"` était lu comme l'affectation
+  // littérale « Join-Path » : une invocation de commande prise pour une valeur.
+  // Le danger n'est pas le faux positif que cela produisait ici, mais le faux
+  // négatif symétrique — un nom de commande ressemblant à un chemin absolu
+  // aurait fait passer une suppression pour extérieure au dépôt.
+  const pattern =
+    /(?:^|\n|;|&&|\|\|)\s*\$?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*("[^"\n]*"|'[^'\n]*'|[^\s;&|]+)\s*(?=$|\n|;|&&|\|\|)/g;
   for (const match of command.matchAll(pattern)) {
     const name = match[1];
     const raw = match[2];

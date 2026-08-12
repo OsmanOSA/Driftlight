@@ -67,6 +67,10 @@ export function buildNotification(
     ? outcome ? "asked" : "recorded"
     : outcome;
   return {
+    // Une alerte qui retient une action doit rester visible jusqu'à ce qu'on
+    // s'en occupe : elle attend une décision, elle n'informe pas au passage.
+    ...(resolved === "recorded" ? {} : { persistent: true }),
+    attribution: "DriftLight — voyant local de dérive",
     title: notificationTitle(root, event, resolved),
     message: notificationMessage(root, event, intent),
     sound: config.notificationSound,

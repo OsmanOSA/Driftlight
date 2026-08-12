@@ -23,6 +23,14 @@ export interface NativeNotification {
   sound: boolean;
   /** Pastille de sévérité. Facultative : voir notify/icons.ts. */
   icon?: string;
+  /**
+   * Maintient la notification à l'écran jusqu'à ce que l'utilisateur l'écarte.
+   * Réservé aux alertes qui retiennent une action : disparaître pendant qu'on
+   * regarde ailleurs est précisément ce qu'elles ne doivent pas faire.
+   */
+  persistent?: boolean;
+  /** Ligne discrète en pied de notification, sous le corps du message. */
+  attribution?: string;
 }
 
 export interface NotifierBackend {

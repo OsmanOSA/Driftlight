@@ -18,8 +18,12 @@ interface NotifierLike {
   notify: (options: Record<string, unknown>, callback: (error: Error | null) => void) => unknown;
 }
 
-/** Filet de sécurité : ce processus ne doit jamais devenir orphelin permanent. */
-const MAX_LIFETIME_MS = 2_000;
+/**
+ * Filet de sécurité : ce processus ne doit jamais devenir orphelin permanent.
+ * Le chemin riche de Windows passe par PowerShell, dont le démarrage à froid
+ * dépasse largement deux secondes ; le budget suit celui du toast lui-même.
+ */
+const MAX_LIFETIME_MS = process.platform === "win32" ? 12_000 : 2_000;
 
 function isNotifierLike(value: unknown): value is NotifierLike {
   return typeof value === "object"
@@ -36,11 +40,15 @@ async function main(): Promise<void> {
     message?: string;
     sound?: boolean;
     icon?: string;
+    persistent?: boolean;
+    attribution?: string;
   };
   const notification = {
     title: payload.title ?? "DriftLight",
     message: payload.message ?? "",
     sound: payload.sound ?? true,
+    ...(payload.persistent === true ? { persistent: true } : {}),
+    ...(payload.attribution ? { attribution: payload.attribution } : {}),
     ...(payload.icon !== undefined && existsSync(payload.icon) ? { icon: payload.icon } : {}),
   };
   if (process.platform === "win32") {
@@ -54,9 +62,18 @@ async function main(): Promise<void> {
 
   const guard = setTimeout(() => process.exit(0), MAX_LIFETIME_MS);
 
+  // macOS affiche titre, sous-titre et corps sur trois lignes distinctes. La
+  // première ligne du message y gagne à devenir le sous-titre : le corps reste
+  // alors lisible sans être écrasé par le chemin du fichier.
+  const [subtitle, ...body] = notification.message.split("\n");
   notifier.notify(
     {
-      ...notification,
+      title: notification.title,
+      ...(process.platform === "darwin" && body.length > 0
+        ? { subtitle, message: body.join("\n") }
+        : { message: notification.message }),
+      sound: notification.sound,
+      ...(notification.icon ? { icon: notification.icon, contentImage: notification.icon } : {}),
       wait: false,
     },
     () => {

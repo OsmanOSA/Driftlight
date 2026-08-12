@@ -253,15 +253,46 @@ Cette séparation a une limite volontaire : DriftLight peut détecter et notifie
 
 ## Notifications natives
 
-Le rouge déclenche une notification système avec son, dont le corps porte le chemin du fichier et la règle déclenchée. L'orange est enregistré sans notifier : passez `notifyOnOrange` à `true` pour l'activer. Le vert ne notifie jamais.
+Le rouge déclenche une notification système avec son. L'orange est enregistré sans notifier : passez `notifyOnOrange` à `true` pour l'activer. Le vert ne notifie jamais.
+
+Le message tient en trois lignes — le fait, la demande à laquelle le comparer, la conduite à tenir — accompagnées d'une pastille de sévérité :
+
+```
+DriftLight · boutique-en-ligne — action refusée
+Réécriture d'un fichier contenant du travail non sauvegardé : src/legacy.ts
+Vous aviez demandé : « Corrige la faute de frappe dans src/app.ts »
+Refusez maintenant : ce contenu n'existe nulle part ailleurs.
+```
 
 Le titre décrit l'issue réelle du hook, pas la sévérité seule :
 
 | Issue | Titre |
 | --- | --- |
+| DriftLight a refusé l'action | `DriftLight · <projet> — action refusée` |
 | DriftLight a demandé une confirmation | `DriftLight · <projet> — confirmation demandée` |
 | Alerte rouge simplement enregistrée | `DriftLight · <projet> — alerte rouge` |
 | Alerte orange | `DriftLight · <projet> — à vérifier` |
+
+### Durée d'affichage
+
+Une alerte qui retient une action reste **à l'écran jusqu'à ce que vous l'écartiez**. Disparaître pendant qu'on regarde ailleurs est précisément ce qu'elle ne doit pas faire.
+
+Sous Windows, DriftLight construit lui-même le document du toast (`scenario="reminder"`) et le remet au système. Si ce chemin échoue — PowerShell indisponible, stratégie d'exécution restrictive, identité non enregistrée — il retombe sur un envoi sobre plutôt que de perdre l'alerte. La première notification d'une machine neuve emprunte donc parfois ce repli ; les suivantes non.
+
+**Sous macOS, la durée d'affichage n'est pas contrôlable depuis l'application.** Elle dépend du style choisi dans *Réglages › Notifications* : « Bannières » disparaît après quelques secondes, « Alertes » persiste jusqu'à ce que vous agissiez. `driftlight doctor` le rappelle. Prétendre l'imposer serait mentir sur ce que l'outil contrôle.
+
+### Identité d'application (Windows)
+
+Windows affiche en en-tête le nom et l'icône de l'application déclarée par un raccourci du menu Démarrer. Sans le nôtre, DriftLight emprunte celle de la bibliothèque qui envoie le toast et s'annonce sous son nom.
+
+```
+driftlight notify status      # ce qui est en place
+driftlight notify install     # enregistre l'identité DriftLight
+driftlight notify uninstall   # la retire
+driftlight notify test        # aperçu d'une notification
+```
+
+L'installation écrit un raccourci dans votre menu Démarrer. C'est une commande explicite et non un geste d'installation automatique : un outil n'a pas à modifier votre menu Démarrer de lui-même.
 
 DriftLight ne dit jamais « action bloquée ». Il renvoie une demande de confirmation et n'a aucun moyen de savoir si l'agent hôte l'honore : un mode de permission permissif peut la contourner sans le prévenir. Promettre un blocage qu'on ne contrôle pas transformerait une alerte en fausse sécurité.
 

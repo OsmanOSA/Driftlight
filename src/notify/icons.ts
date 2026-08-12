@@ -27,6 +27,11 @@ function candidates(fileName: string): string[] {
   ];
 }
 
+/** Icône de l'outil lui-même, utilisée par l'identité d'application Windows. */
+export function appIconPath(extension: "png" | "ico" = "png"): string | undefined {
+  return candidates(`driftlight.${extension}`).find((candidate) => existsSync(candidate));
+}
+
 export function severityIconPath(level: Severity): string | undefined {
   if (cache.has(level)) return cache.get(level);
   const fileName = FILES[level];
