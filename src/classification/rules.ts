@@ -304,11 +304,28 @@ function deletionRequestedInWords(task: string): boolean {
  * dans presque toutes les demandes, et suffirait sinon à faire passer
  * `rm -rf .` pour une instruction reçue.
  */
+/**
+ * Cible dont rien ne rendrait le contenu.
+ *
+ * Un fichier suivi par Git se restaure ; un fichier ignoré se régénère. Un
+ * fichier non suivi, lui, n'existe qu'à cet endroit — le supprimer est
+ * définitif. Le statut Git le sait déjà, il n'y a rien à demander de plus.
+ */
+function deletionLosesUnrecoverableFiles(
+  relative: string,
+  baseline: GitBaseline,
+): boolean {
+  return baseline.files.some((file) =>
+    file.kind === "untracked"
+    && (file.path === relative || file.path.startsWith(`${relative}/`)));
+}
+
 function deletionExplicitlyRequested(
   segment: string,
   root: string,
   values: Map<string, string>,
   intent: { text: string; scopeAdditions: string[] } | undefined,
+  baseline: GitBaseline,
 ): boolean {
   if (!intent) return false;
   const targets = deletionTargets(segment, values);
@@ -320,9 +337,14 @@ function deletionExplicitlyRequested(
     if (!isInsideRoot(root, absolute)) return true;
     const relative = toPosixPath(path.relative(root, absolute));
     if (relative === "" || relative === ".") return false;
-    // Une portée ajoutée à la main est un geste délibéré ; le texte libre d'un
-    // tour ne l'est pas, et doit donc porter le verbe en plus du chemin.
+    // Une portée ajoutée à la main est un geste délibéré : l'utilisateur a écrit
+    // le chemin lui-même, hors du fil de la conversation. Elle autorise donc
+    // même l'irrécupérable — c'est la seule voie pour y consentir.
     if (pathExplicitlyExpected("", intent.scopeAdditions, relative)) return true;
+    // Le texte libre d'un tour, lui, ne suffit pas quand plus rien ne rattrape
+    // l'erreur. « Supprime X » dit en passant et « supprime X » pensé
+    // sérieusement s'écrivent pareil ; l'un des deux est sans retour.
+    if (deletionLosesUnrecoverableFiles(relative, baseline)) return false;
     return asked && pathExplicitlyExpected(intent.text, [], relative);
   });
 }
@@ -351,7 +373,7 @@ export function classifyCommand(
       fsDelete
       && !hasDryRun(tokens(segment))
       && !deletionStaysOutsideRoot(segment, baseline.root, values)
-      && !deletionExplicitlyRequested(segment, baseline.root, values, intent)
+      && !deletionExplicitlyRequested(segment, baseline.root, values, intent, baseline)
     ) {
       findings.push(finding(
         severityFor(config, "destructive-file-command"),
