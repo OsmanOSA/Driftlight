@@ -43,6 +43,7 @@ async function main(): Promise<void> {
     persistent?: boolean;
     attribution?: string;
     tag?: string;
+    readyFile?: string;
     dismiss?: string[];
   };
 
@@ -67,6 +68,7 @@ async function main(): Promise<void> {
     ...(payload.persistent === true ? { persistent: true } : {}),
     ...(payload.attribution ? { attribution: payload.attribution } : {}),
     ...(payload.tag ? { tag: payload.tag } : {}),
+    ...(payload.readyFile ? { readyFile: payload.readyFile } : {}),
     ...(payload.icon !== undefined && existsSync(payload.icon) ? { icon: payload.icon } : {}),
   };
   if (process.platform === "win32") {

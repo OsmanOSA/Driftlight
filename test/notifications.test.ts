@@ -33,6 +33,13 @@ import {
   WINDOWS_TOAST_STARTUP_MS,
   windowsToastArguments,
 } from "../src/notify/windows-toast.js";
+import {
+  panelEventName,
+  WINDOWS_PANEL_MAX_HEIGHT,
+  WINDOWS_PANEL_WIDTH,
+  windowsPanelPayload,
+  windowsPanelScript,
+} from "../src/notify/windows-panel.js";
 import { formatStopSummary } from "../src/ui/terminal.js";
 
 const SESSION = "claude-session-1";
@@ -140,7 +147,7 @@ test("a firm refusal and a confirmation request are never announced alike", asyn
     environment: NEUTRAL_ENV,
   });
 
-  assert.match(notifier.sent[0]?.title ?? "", /action refusée$/);
+  assert.match(notifier.sent[0]?.title ?? "", /action bloquée$/);
   assert.match(notifier.sent[1]?.title ?? "", /confirmation demandée$/);
 });
 
@@ -521,6 +528,96 @@ test("Windows toast uses argument arrays and a bounded startup window", () => {
   assert.ok(WINDOWS_TOAST_STARTUP_MS < 1_000);
 });
 
+test("the Windows panel lays out the structured detail rather than stacked lines", () => {
+  const readyFile = path.join(os.tmpdir(), "driftlight-panel-ready-unit-test");
+  const payload = windowsPanelPayload({
+    ...richNotification,
+    detail: {
+      verb: "Réécriture",
+      headline: "fichier contenant du travail non sauvegardé",
+      evidence: "src/legacy.ts",
+      meta: "Alerte rouge · 2 signaux concordants",
+      intent: "« Corrige & range »",
+      action: "Refusez maintenant.",
+      status: "Action refusée — l'agent ne l'exécutera pas",
+    },
+    readyFile,
+  });
+
+  assert.equal(payload.context, "DriftLight · projet");
+  assert.equal(payload.verb, "Réécriture");
+  assert.equal(payload.headline, "Fichier contenant du travail non sauvegardé", "l'énoncé ouvre le panneau, donc il porte la majuscule");
+  assert.equal(payload.evidence, "src/legacy.ts", "le sujet vit dans son propre encart, pas collé à l'énoncé");
+  assert.equal(payload.meta, "Alerte rouge · 2 signaux concordants");
+  assert.equal(payload.status, "Action refusée — l'agent ne l'exécutera pas");
+  assert.equal(payload.persistent, true);
+  assert.equal(payload.readyFile, readyFile);
+  assert.match(payload.accentStart, /^#FF/);
+  assert.equal(
+    windowsPanelPayload({ ...richNotification, readyFile: path.join(process.cwd(), "unexpected.txt") }).readyFile,
+    undefined,
+    "un accusé de démarrage ne peut jamais écrire hors du dossier temporaire",
+  );
+});
+
+/**
+ * Une notification construite ailleurs dans le code n'a pas de description
+ * structurée. Elle doit rester lisible, seulement moins riche : sans ce repli,
+ * le panneau s'afficherait vide.
+ */
+test("a notification without structured detail still fills the panel", () => {
+  const payload = windowsPanelPayload(richNotification);
+
+  assert.equal(payload.headline, "Réécriture d'un fichier");
+  assert.equal(payload.evidence, "src/legacy.ts");
+  assert.equal(payload.intent, "Vous aviez demandé : « Corrige & range »");
+  assert.equal(payload.action, "Refusez maintenant.");
+  assert.equal(payload.verb, "", "sans verbe connu, la rangée se replie plutôt que d'en inventer un");
+  assert.equal(payload.status, "Action bloquée");
+});
+
+test("the Windows panel keeps user text out of executable PowerShell", () => {
+  const notification = {
+    ...richNotification,
+    title: "DriftLight · projet — action bloquée'; exit 9; #",
+  };
+  const script = windowsPanelScript(notification);
+
+  assert.ok(!script.includes(notification.title));
+  assert.match(script, /FromBase64String/);
+  assert.match(script, /-EncodedCommand|XamlReader|PanelHeadline/);
+});
+
+test("the Windows panel is notification-sized and its application owns the window", () => {
+  const script = windowsPanelScript(richNotification);
+
+  assert.ok(WINDOWS_PANEL_WIDTH <= 440, "une notification, pas une boîte de dialogue");
+  assert.ok(WINDOWS_PANEL_MAX_HEIGHT <= 400, "le plafond doit rester celui d'un coin d'écran");
+  assert.match(script, /ShutdownMode.*OnExplicitShutdown/);
+  assert.match(script, /\$app\.Run\(\$window\)/);
+  assert.doesNotMatch(script, /\$window\.Show\(\)/);
+  assert.match(script, /-not \$payload\.persistent/);
+});
+
+/**
+ * Le panneau ne détient pas la décision : le hook l'a rendue avant qu'il ne
+ * s'affiche, et l'agent tranche dans sa propre interface. Un bouton d'accord ou
+ * de refus y serait décoratif — exactement la promesse creuse que ce projet a
+ * déjà eu à retirer d'un titre de notification.
+ */
+test("the panel offers no verdict it cannot deliver", () => {
+  const script = windowsPanelScript(richNotification);
+
+  assert.doesNotMatch(script, /Autoriser|Approuver|Refuser|Rejeter/i);
+  // Seul bouton présent : fermer la fenêtre, ce que le panneau contrôle bel et bien.
+  assert.match(script, /\$close\.Add_Click\(\{\$window\.Close\(\)\}\)/);
+});
+
+test("panel dismissal names are bounded and contain no executable characters", () => {
+  assert.equal(panelEventName("event/avec:signes"), "Local\\DriftLight.Notification.event-avec-signes");
+  assert.ok(panelEventName("x".repeat(200)).length <= 94);
+});
+
 /**
  * SnoreToast n'affiche rien du tout lorsque `-p` désigne un fichier absent.
  * Perdre la couleur est acceptable ; perdre l'alerte ne l'est pas.
@@ -539,7 +636,7 @@ test("a severity badge is attached only when the file really exists", () => {
 // --- Toast Windows enrichi ----------------------------------------------------
 
 const richNotification: NativeNotification = {
-  title: "DriftLight · projet — action refusée",
+  title: "DriftLight · projet — action bloquée",
   message: "Réécriture d'un fichier : src/legacy.ts\nVous aviez demandé : « Corrige & range »\nRefusez maintenant.",
   sound: true,
   persistent: true,
@@ -561,6 +658,19 @@ test("user content is escaped before it reaches the toast document", () => {
   assert.match(xml, /&amp;/);
   assert.match(xml, /&lt;script&gt;/);
   assert.match(xml, /&quot;/);
+});
+
+test("the Windows toast improves hierarchy without rewriting its content", () => {
+  const xml = buildToastXml(richNotification, "file:///badge-red.png");
+
+  assert.match(xml, /<visual lang="fr-FR">/);
+  assert.match(xml, /hint-style="title"[^>]*>DriftLight · projet — action bloquée<\/text>/);
+  assert.match(xml, /hint-style="body"[^>]*>Réécriture d&apos;un fichier : src\/legacy\.ts<\/text>/);
+  assert.match(xml, /hint-style="captionSubtle"[^>]*>Vous aviez demandé/);
+  assert.match(xml, /hint-style="bodySubtle"[^>]*>Refusez maintenant/);
+  assert.match(xml, /alternateText="DriftLight"/);
+  assert.match(xml, /content="Ignorer"/);
+  assert.doesNotMatch(xml, /Alerte rouge|Confirmation requise|Fermer l’alerte/);
 });
 
 /**

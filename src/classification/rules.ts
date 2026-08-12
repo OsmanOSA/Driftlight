@@ -1,4 +1,5 @@
 import path from "node:path";
+import os from "node:os";
 import { loadScoringConfigSync } from "../config/scoring-config.js";
 import type {
   ClassificationInput,
@@ -179,6 +180,32 @@ function shellAssignments(command: string): Map<string, string> {
     const value = raw.replace(/^["']|["']$/g, "");
     if (/[$`]/.test(value)) continue;
     values.set(name, value);
+  }
+
+  // Forme employée par DriftLight et de nombreux tests Windows : un nom
+  // imprévisible, mais nécessairement réduit à un seul segment sous TEMP.
+  // On n'accepte pas un enfant variable ou une autre invocation de commande :
+  // ces formes restent volontairement inconnues et donc signalées.
+  const temporaryGuidDirectory =
+    /(?:^|\r?\n|;|&&|\|\|)\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*Join-Path\s+\$env:(?:TEMP|TMP|TMPDIR)\s+\(\s*["']([^"'\\/\r\n]*)["']\s*\+\s*\[guid\]::NewGuid\(\)\.ToString\(\s*["']N["']\s*\)\s*\)\s*(?=$|\r?\n|;|&&|\|\|)/gi;
+  for (const match of command.matchAll(temporaryGuidDirectory)) {
+    const name = match[1];
+    const prefix = match[2];
+    if (name === undefined || prefix === undefined) continue;
+    values.set(name, path.join(os.tmpdir(), `${prefix}00000000000000000000000000000000`));
+  }
+
+  // GetFullPath ne change pas la cible d'une valeur déjà résolue. Cette copie
+  // est limitée à une variable connue ; elle ne transforme jamais une valeur
+  // ambiguë en chemin réputé sûr.
+  const normalizedAlias =
+    /(?:^|\r?\n|;|&&|\|\|)\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\[(?:IO|System\.IO)\.Path\]::GetFullPath\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*(?=$|\r?\n|;|&&|\|\|)/gi;
+  for (const match of command.matchAll(normalizedAlias)) {
+    const name = match[1];
+    const source = match[2];
+    if (name === undefined || source === undefined) continue;
+    const value = values.get(source);
+    if (value !== undefined) values.set(name, path.resolve(value));
   }
   return values;
 }

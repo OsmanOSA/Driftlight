@@ -1,7 +1,10 @@
 #!/usr/bin/env node
+import { randomUUID } from "node:crypto";
+import { access, rm, unlink } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
-import { rm } from "node:fs/promises";
 import { CodexAdapter } from "./adapters/codex/adapter.js";
 import {
   describeSuppression,
@@ -14,6 +17,8 @@ import { feedbackStatsPath, readFeedbackStats } from "./classification/feedback-
 import { loadNativeBackend, type NativeNotification } from "./notify/backend.js";
 import { severityIconPath } from "./notify/icons.js";
 import { identityStatus, installIdentity, removeIdentity } from "./notify/identity.js";
+import { showWindowsPanel, WINDOWS_PANEL_STARTUP_MS } from "./notify/windows-panel.js";
+import { dismissWindowsToasts } from "./notify/windows-toast.js";
 import { loadScoringConfigSync } from "./config/scoring-config.js";
 import { runHookSafely, type SafeHookOutcome } from "./claude/safe-hook.js";
 import { installClaudeHooks, isInstalledPackage, uninstallClaudeHooks } from "./claude/installer.js";
@@ -80,6 +85,7 @@ Commandes :
   driftlight doctor [--cwd .]          # diagnostic de l'installation
   driftlight learning [--reset] [--cwd .]  # ce que DriftLight a appris de vos retours
   driftlight notify [status|install|uninstall|test]  # identité et aperçu des notifications
+    test [--orange] [--panel]           # --panel force le panneau plutôt que le toast
   driftlight hook                       # appelé par Claude Code via stdin JSON
 
 Tout reste local, sur cette machine uniquement. L'état par projet est rangé sous
@@ -425,17 +431,40 @@ async function runNotify(args: string[]): Promise<void> {
   if (action === "test") {
     const level = args.includes("--orange") ? "ORANGE" : "RED";
     const icon = severityIconPath(level);
-    await dispatchPreviewNotification({
-      title: `DriftLight · ${path.basename(process.cwd())} — ${level === "RED" ? "action refusée" : "à vérifier"}`,
+    const notification: NativeNotification = {
+      title: `DriftLight · ${path.basename(process.cwd())} — ${level === "RED" ? "action bloquée" : "à vérifier"}`,
       message: "Réécriture d'un fichier contenant du travail non sauvegardé : src/exemple.ts\n"
         + "Vous aviez demandé : « Corrige la faute de frappe dans src/app.ts »\n"
         + "Refusez maintenant : ce contenu n'existe nulle part ailleurs.",
+      detail: {
+        verb: "Réécriture",
+        headline: "Fichier contenant du travail non sauvegardé",
+        evidence: "src/exemple.ts",
+        meta: level === "RED" ? "Alerte rouge · 2 signaux concordants" : "À vérifier",
+        intent: "« Corrige la faute de frappe dans src/app.ts »",
+        action: "Refusez maintenant : ce contenu n'existe nulle part ailleurs.",
+        status: level === "RED" ? "Action refusée — l'agent ne l'exécutera pas" : "Confirmation demandée dans l'agent",
+      },
       sound: true,
       persistent: true,
       attribution: "DriftLight — voyant local de dérive",
+      tag: "driftlight-notification-preview",
       ...(icon ? { icon } : {}),
-    });
-    console.log("✓ Notification d'essai envoyée.");
+    };
+    // Le toast Windows passe avant le panneau en fonctionnement normal. `--panel`
+    // court-circuite ce choix pour voir le panneau tel qu'il s'affichera lorsque
+    // le toast échoue — sinon il ne serait observable que sur une panne.
+    if (args.includes("--panel")) {
+      if (process.platform !== "win32") {
+        console.log("Le panneau est propre à Windows ; sans objet ici.");
+        return;
+      }
+      const shown = await showWindowsPanel(notification);
+      console.log(shown ? "✓ Panneau d'essai lancé." : "✗ Le panneau n'a pas pu démarrer.");
+      return;
+    }
+    await dispatchPreviewNotification(notification);
+    console.log("✓ Notification d'essai remise à Windows.");
     return;
   }
 
@@ -458,6 +487,25 @@ async function runNotify(args: string[]): Promise<void> {
 async function dispatchPreviewNotification(notification: NativeNotification): Promise<void> {
   const backend = await loadNativeBackend();
   if (!backend) throw new Error("Aucune bibliothèque de notification disponible.");
+  if (process.platform === "win32") {
+    const readyFile = path.join(os.tmpdir(), `driftlight-panel-ready-${process.pid}-${randomUUID()}`);
+    if (notification.tag) await dismissWindowsToasts([notification.tag]);
+    try {
+      await backend.send({ ...notification, readyFile });
+      const deadline = Date.now() + WINDOWS_PANEL_STARTUP_MS + 1_000;
+      while (Date.now() < deadline) {
+        try {
+          await access(readyFile);
+          return;
+        } catch {
+          await delay(50);
+        }
+      }
+      throw new Error("La notification Windows n'a pas confirmé son démarrage.");
+    } finally {
+      await unlink(readyFile).catch(() => undefined);
+    }
+  }
   await backend.send(notification);
 }
 

@@ -10,7 +10,7 @@ import { runCodexHookBridge, type HookBridgeResult } from "../src/adapters/codex
 import { LocalCoreEventSink } from "../src/core/local-core-event-sink.js";
 import { NormalizedEventProcessor } from "../src/core/normalized-event-processor.js";
 import { readCurrentIntentSync } from "../src/intent/current-intent.js";
-import { dispatchNotifications } from "../src/notify/dispatcher.js";
+import { dismissPendingNotifications, dispatchNotifications } from "../src/notify/dispatcher.js";
 import type { NativeNotification } from "../src/notify/backend.js";
 import { SessionStore } from "../src/session/store.js";
 import { readCurrentStatusSync } from "../src/status/current-status.js";
@@ -70,23 +70,65 @@ async function deliverResult(
   return result;
 }
 
-function notifyingProcessor(notifications: NativeNotification[]): NormalizedEventProcessor {
+function notifyingProcessor(
+  notifications: NativeNotification[],
+  dismissed: string[][] = [],
+): NormalizedEventProcessor {
+  const loadBackend = async () => ({
+    name: "test-notifier",
+    send: async (notification: NativeNotification) => { notifications.push(notification); },
+    dismiss: async (tags: readonly string[]) => { dismissed.push([...tags]); },
+  });
   return new NormalizedEventProcessor({
-    notify: async (root, events, config, sessionId) => await dispatchNotifications(
+    notify: async (root, events, config, sessionId, options) => await dispatchNotifications(
       root,
       events,
       config,
       sessionId,
       {
+        ...options,
         environment: {},
-        loadBackend: async () => ({
-          name: "test-notifier",
-          send: async (notification) => { notifications.push(notification); },
-        }),
+        loadBackend,
       },
     ),
+    dismiss: async (root, sessionId, options) => await dismissPendingNotifications(root, sessionId, {
+      ...options,
+      environment: {},
+      loadBackend,
+    }),
   });
 }
+
+test("PermissionRequest garde l'alerte Codex jusqu'à la fin de la décision native", async (context) => {
+  const root = await fixture(context);
+  const notifications: NativeNotification[] = [];
+  const dismissed: string[][] = [];
+  const sink = new LocalCoreEventSink(notifyingProcessor(notifications, dismissed));
+
+  await deliver(root, sink, "SessionStart", { source: "startup" });
+  await deliver(root, sink, "UserPromptSubmit", {
+    turn_id: "turn-approval",
+    prompt: "Inspecte seulement le dépôt",
+  });
+  await deliver(root, sink, "PermissionRequest", {
+    turn_id: "turn-approval",
+    tool_name: "Bash",
+    tool_input: { command: "git clean -fd", description: "Nettoyer le dépôt" },
+  });
+
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0]?.persistent, true);
+  assert.ok(notifications[0]?.tag);
+  assert.match(notifications[0]?.title ?? "", /confirmation demandée$/);
+  assert.deepEqual(dismissed, []);
+
+  const stopped = await deliverResult(root, sink, "Stop", {
+    turn_id: "turn-approval",
+    stop_hook_active: false,
+  });
+  assert.equal(stopped.stdout, "{}");
+  assert.deepEqual(dismissed, [[notifications[0]?.tag]]);
+});
 
 test("l'entrée Codex alimente intention, classifieur, statut, historique et notification", async (context) => {
   const root = await fixture(context);

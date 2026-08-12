@@ -225,7 +225,7 @@ Sur macOS, la même commande et le même package Node sont utilisés :
 node /chemin/Driftlight/dist/src/cli.js codex connect
 ```
 
-L'installateur écrit uniquement dans la configuration utilisateur officielle `${CODEX_HOME:-~/.codex}/`. Il fusionne les événements `SessionStart`, `SessionEnd`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `SubagentStart`, `SubagentStop` et `Stop` dans `hooks.json`, conserve les champs et hooks tiers, et utilise la commande Windows appropriée. Il configure aussi dans `config.toml` la politique native `approval_policy = "untrusted"` et `approvals_reviewer = "user"` : c'est Codex, et non DriftLight, qui présente alors son interface Autoriser / Refuser avant une commande non approuvée. Une seconde connexion ne crée aucun doublon et ne reprend jamais la main sur une valeur modifiée ensuite par l'utilisateur. À la désinstallation, DriftLight restaure uniquement les lignes qu'il avait lui-même changées, si elles sont encore intactes.
+L'installateur écrit uniquement dans la configuration utilisateur officielle `${CODEX_HOME:-~/.codex}/`. Il fusionne les événements `SessionStart`, `SessionEnd`, `UserPromptSubmit`, `PermissionRequest`, `PreToolUse`, `PostToolUse`, `SubagentStart`, `SubagentStop` et `Stop` dans `hooks.json`, conserve les champs et hooks tiers, et utilise la commande Windows appropriée. Il configure aussi dans `config.toml` la politique native `approval_policy = "untrusted"` et `approvals_reviewer = "user"` : c'est Codex, et non DriftLight, qui présente alors son interface Autoriser / Refuser avant une commande non approuvée. Une seconde connexion ne crée aucun doublon et ne reprend jamais la main sur une valeur modifiée ensuite par l'utilisateur. À la désinstallation, DriftLight restaure uniquement les lignes qu'il avait lui-même changées, si elles sont encore intactes.
 
 Codex doit ensuite approuver la définition exacte du hook :
 
@@ -272,28 +272,29 @@ node D:\Driftlight\dist\src\cli.js codex disconnect
 5. Ouvrez `/hooks`, contrôlez la commande DriftLight et approuvez-la.
 6. Soumettez `Create a file called scopelight-test.txt`.
 7. Vérifiez que `current-intent.json` contient le tour courant et qu'un fichier JSON `USER_PROMPT` apparaît dans `inbox/codex/` de l'état du projet.
-8. Vérifiez les messages `TOOL_PROPOSED` puis `FILE_EDITED` lorsque Codex utilise `apply_patch`, ainsi que la session `codex-<session-id>.json` dans `sessions/`.
-9. Laissez le tour se terminer.
-10. Vérifiez la présence de `AGENT_STOPPED`.
-11. Ouvrez un autre repository et lancez une nouvelle session Codex.
-12. Vérifiez que sa propre boîte `inbox/codex/` reçoit les événements sans réinstallation.
+8. Sur une commande soumise à approbation native, vérifiez que `PermissionRequest` produit une alerte persistante pendant que Codex affiche Autoriser / Refuser.
+9. Vérifiez les messages `TOOL_PROPOSED` puis `FILE_EDITED` lorsque Codex utilise `apply_patch`, ainsi que la session `codex-<session-id>.json` dans `sessions/`.
+10. Laissez le tour se terminer.
+11. Vérifiez la présence de `AGENT_STOPPED` et la disparition de l'alerte persistante.
+12. Ouvrez un autre repository et lancez une nouvelle session Codex.
+13. Vérifiez que sa propre boîte `inbox/codex/` reçoit les événements sans réinstallation.
 
-Le bridge remet au Core le prompt courant et les commandes proposées parce qu'ils sont nécessaires à la classification, après masquage des formats de secrets évidents. `PreToolUse/apply_patch` est classifié avant l'action ; `PostToolUse` déclenche ensuite la réconciliation réelle du filesystem. Le bridge ne persiste ni transcript, ni message assistant complet, ni output d'outil complet. Un payload invalide, un Core indisponible ou une erreur d'écriture conduit toujours à une sortie réussie du hook afin que Codex continue normalement.
+Le bridge remet au Core le prompt courant et les commandes proposées parce qu'ils sont nécessaires à la classification, après masquage des formats de secrets évidents. `PermissionRequest` classe la demande pendant que le dialogue natif attend ; `PreToolUse/apply_patch` la classe également avant l'action quand aucun dialogue n'a eu lieu ; `PostToolUse` déclenche ensuite la réconciliation réelle du filesystem. Le bridge ne persiste ni transcript, ni message assistant complet, ni output d'outil complet. Un payload invalide, un Core indisponible ou une erreur d'écriture conduit toujours à une sortie réussie du hook afin que Codex continue normalement.
 
 ### Autoriser ou refuser dans Codex
 
-DriftLight ne crée aucun bouton et ne demande plus de saisir un `eventId`. Les hooks restent en observation et ne renvoient ni `deny` ni `ask`. La documentation Codex précise qu'un hook `PreToolUse` ne peut pas déclencher lui-même le dialogue natif avec `permissionDecision: "ask"` ; cette valeur n'est pas prise en charge. L'interface native est donc déclenchée par la politique d'approbation de Codex configurée lors de `codex connect`. Les commandes classées non fiables par Codex présentent directement ses choix natifs dans l'espace de travail.
+DriftLight ne crée aucun bouton et ne demande plus de saisir un `eventId`. Dans `PermissionRequest`, il ne rend aucune décision : Codex conserve donc son dialogue natif Autoriser / Refuser. Si la demande est rouge, DriftLight affiche une alerte persistante pendant cette attente ; `PostToolUse`, `Stop`, un nouveau prompt ou `SessionEnd` la retire une fois la décision consommée. La documentation Codex précise toujours qu'un hook `PreToolUse` ne peut pas déclencher lui-même ce dialogue avec `permissionDecision: "ask"` ; cette valeur n'est pas prise en charge.
 
-Cette séparation a une limite volontaire : DriftLight peut détecter et notifier un rouge que la politique native de Codex ne considère pas comme une commande à approuver. Dans ce cas, DriftLight ne fabrique pas un faux dialogue et reste fail-open. Les futurs mécanismes officiellement documentés pourront être branchés sans réintroduire un protocole textuel propriétaire.
+Cette séparation conserve une limite : `PermissionRequest` n'existe que lorsque Codex avait déjà décidé de demander une approbation. DriftLight peut donc détecter un rouge que la politique native ne soumet pas au dialogue. `PreToolUse` sait désormais refuser fermement (`deny`), mais ne sait pas demander une approbation contournable ; cette tranche ne transforme pas une confirmation souhaitée en refus irréversible.
 
 ## Notifications natives
 
-Le rouge déclenche une notification système avec son. L'orange est enregistré sans notifier : passez `notifyOnOrange` à `true` pour l'activer. Le vert ne notifie jamais.
+Le rouge déclenche une alerte avec son. L'orange est enregistré sans notifier : passez `notifyOnOrange` à `true` pour l'activer. Le vert ne notifie jamais. Sous Windows, l'alerte utilise d'abord la petite carte de notification native ; le panneau WPF sombre ne sert que de repli si Windows refuse le toast.
 
 Le message tient en trois lignes — le fait, la demande à laquelle le comparer, la conduite à tenir — accompagnées d'une pastille de sévérité :
 
 ```
-DriftLight · boutique-en-ligne — action refusée
+DriftLight · boutique-en-ligne — action bloquée
 Réécriture d'un fichier contenant du travail non sauvegardé : src/legacy.ts
 Vous aviez demandé : « Corrige la faute de frappe dans src/app.ts »
 Refusez maintenant : ce contenu n'existe nulle part ailleurs.
@@ -303,14 +304,14 @@ Le titre décrit l'issue réelle du hook, pas la sévérité seule :
 
 | Issue | Titre |
 | --- | --- |
-| DriftLight a refusé l'action | `DriftLight · <projet> — action refusée` |
+| DriftLight a refusé l'action | `DriftLight · <projet> — action bloquée` |
 | DriftLight a demandé une confirmation | `DriftLight · <projet> — confirmation demandée` |
 | Alerte rouge simplement enregistrée | `DriftLight · <projet> — alerte rouge` |
 | Alerte orange | `DriftLight · <projet> — à vérifier` |
 
 ### Durée d'affichage
 
-Une alerte qui retient une action reste **à l'écran jusqu'à ce que vous l'écartiez**. Disparaître pendant qu'on regarde ailleurs est précisément ce qu'elle ne doit pas faire.
+Une alerte qui accompagne une action en attente reste **à l'écran jusqu'à ce que vous l'écartiez ou que la décision soit consommée**. Disparaître pendant que le dialogue attend est précisément ce qu'elle ne doit pas faire.
 
 Sous Windows, DriftLight construit lui-même le document du toast (`scenario="reminder"`) et le remet au système. Si ce chemin échoue — PowerShell indisponible, stratégie d'exécution restrictive, identité non enregistrée — il retombe sur un envoi sobre plutôt que de perdre l'alerte. La première notification d'une machine neuve emprunte donc parfois ce repli ; les suivantes non.
 
@@ -325,13 +326,16 @@ driftlight notify status      # ce qui est en place
 driftlight notify install     # enregistre l'identité DriftLight
 driftlight notify uninstall   # la retire
 driftlight notify test        # aperçu d'une notification
+npm.cmd run notify:test       # même aperçu depuis le dépôt sous Windows
 ```
+
+Utilisez cette commande pour tester le panneau sans toucher au dépôt. Les commandes sans effet, comme `git clean -n`, restent volontairement silencieuses : `-n` ne supprime rien et ne constitue donc pas une alerte DriftLight.
 
 L'installation écrit un raccourci dans votre menu Démarrer. C'est une commande explicite et non un geste d'installation automatique : un outil n'a pas à modifier votre menu Démarrer de lui-même.
 
-DriftLight ne dit jamais « action bloquée ». Il renvoie une demande de confirmation et n'a aucun moyen de savoir si l'agent hôte l'honore : un mode de permission permissif peut la contourner sans le prévenir. Promettre un blocage qu'on ne contrôle pas transformerait une alerte en fausse sécurité.
+DriftLight dit « action bloquée » uniquement après un refus ferme (`deny`). Une demande de confirmation et une alerte simplement enregistrée gardent un libellé distinct, car l'agent hôte peut continuer selon son mode de permission.
 
-Sous Claude Code, `blockOnRed` pilote le dialogue de confirmation existant. Sous Codex, DriftLight observe et notifie ; Codex décide seul d'afficher Autoriser / Refuser selon sa politique native. Les identifiants d'événements restent utiles à l'historique et à `explain`, jamais comme commande d'approbation.
+Sous Claude Code, `blockOnRed` pilote directement le dialogue de confirmation existant. Sous Codex, `PermissionRequest` synchronise l'alerte avec le dialogue Autoriser / Refuser que la politique native a décidé d'afficher. Les identifiants d'événements restent utiles à l'historique et à `explain`, jamais comme commande d'approbation.
 
 ### Anti-bruit
 
@@ -441,7 +445,7 @@ Ils n'émettent pas non plus de notification système, alors même qu'ils invoqu
 - watcher par polling, sans optimisation pour les monorepos massifs ;
 - pas d'interface graphique, de diff interactif ou de lancement automatique de l'agent ;
 - pas de rollback ni d'exécution automatique d'une commande destructive ;
-- Codex ne permet pas encore à `PreToolUse` de forcer le dialogue natif d'approbation (`ask` est reconnu mais non pris en charge) : DriftLight reste donc consultatif et la politique native de Codex décide seule d'afficher Autoriser / Refuser ;
+- Codex ne permet pas encore à `PreToolUse` de forcer le dialogue natif d'approbation (`ask` est reconnu mais non pris en charge) : `PermissionRequest` synchronise le voyant avec les dialogues que Codex déclenche déjà, sans pouvoir en créer un pour chaque rouge DriftLight ;
 - les hooks Codex ne disposent pas ici du champ `terminalSequence` utilisé par Claude Code : le statut persistant et les notifications natives fonctionnent, mais le titre du terminal n'est pas piloté depuis le bridge Codex ;
 - le package TypeScript installe un bridge Node (`driftlight-hook`, shim `.cmd` sous npm/Windows) et configure explicitement `node.exe` via `commandWindows` ; il ne produit pas encore un exécutable natif autonome `DriftLight-hook.exe` ;
 - notifications validées sous Windows uniquement ; le chemin macOS partage le même code et la même API mais n'a pas été exécuté sur machine ;

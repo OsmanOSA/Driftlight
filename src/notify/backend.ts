@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { NotificationDetail } from "./message.js";
 
 /**
  * Adaptateur vers la bibliothèque de notifications natives.
@@ -36,6 +37,14 @@ export interface NativeNotification {
    * alerte persistante ne peut plus être rappelée une fois affichée.
    */
   tag?: string;
+  /**
+   * Même alerte, en champs séparés. Les backends qui ne savent afficher que du
+   * texte l'ignorent et s'en tiennent à `message` ; le panneau Windows s'en sert
+   * pour dessiner une hiérarchie plutôt qu'empiler des lignes.
+   */
+  detail?: NotificationDetail;
+  /** Accusé de démarrage interne du panneau de prévisualisation Windows. */
+  readyFile?: string;
 }
 
 export interface NotifierBackend {
@@ -83,7 +92,9 @@ function runDetached(payload: unknown): void {
 }
 
 export const loadNativeBackend: BackendLoader = async () => {
-  if (!isBackendInstalled()) return null;
+  // Le panneau WPF Windows ne dépend pas de node-notifier. La dépendance reste
+  // nécessaire ailleurs et fournit le dernier repli SnoreToast sous Windows.
+  if (process.platform !== "win32" && !isBackendInstalled()) return null;
   return {
     name: BACKEND_MODULE,
     send: async (notification) => runDetached(notification),

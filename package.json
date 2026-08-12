@@ -19,6 +19,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "lint": "tsc -p tsconfig.json --noEmit",
+    "notify:test": "npm run build && node dist/src/cli.js notify test",
     "test": "npm run build && node scripts/run-tests.mjs"
   },
   "engines": {

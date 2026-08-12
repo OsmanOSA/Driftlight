@@ -162,6 +162,7 @@ export function normalizeCodexEvent(nativeEvent: unknown, now = (): Date => new 
       const prompt = string(input.prompt);
       return prompt === undefined ? [] : [base("USER_PROMPT", { prompt: redactSensitiveText(prompt), native: metadata })];
     }
+    case "PermissionRequest":
     case "PreToolUse": {
       const toolName = string(input.tool_name);
       if (!toolName) return [];

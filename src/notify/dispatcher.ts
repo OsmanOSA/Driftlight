@@ -2,7 +2,7 @@ import type { CurrentIntentState, DriftLightConfig, SessionEvent, Severity } fro
 import { readOwnCurrentIntentSync } from "../intent/current-intent.js";
 import { loadNativeBackend, type BackendLoader, type NativeNotification, type NotifierBackend } from "./backend.js";
 import { severityIconPath } from "./icons.js";
-import { notificationMessage, notificationTitle, type HookOutcome } from "./message.js";
+import { notificationDetail, notificationMessage, notificationTitle, type HookOutcome } from "./message.js";
 import { NotificationLedger, type ReservationOutcome } from "./notified-log.js";
 import { rememberPendingToasts, takePendingToasts } from "./pending-toasts.js";
 
@@ -74,6 +74,7 @@ export function buildNotification(
     attribution: "DriftLight — voyant local de dérive",
     title: notificationTitle(root, event, resolved),
     message: notificationMessage(root, event, intent),
+    detail: notificationDetail(root, event, intent, resolved),
     sound: config.notificationSound,
     ...(icon ? { icon } : {}),
   };

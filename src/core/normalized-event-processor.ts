@@ -26,10 +26,12 @@ import { SessionStore } from "../session/store.js";
 import { recordCurrentStatus } from "../status/current-status.js";
 
 type NotificationDispatcher = typeof dispatchNotifications;
+type NotificationDismisser = typeof dismissPendingNotifications;
 
 export interface NormalizedEventProcessorOptions {
   classifier?: Classifier;
   notify?: NotificationDispatcher;
+  dismiss?: NotificationDismisser;
 }
 
 interface SessionContext {
@@ -57,6 +59,10 @@ function nativeTurnId(event: ScopeLightEvent): string | undefined {
   return string(record(event.payload.native)?.turnId);
 }
 
+function nativeHookEventName(event: ScopeLightEvent): string | undefined {
+  return string(record(event.payload.native)?.hookEventName);
+}
+
 function proposedKind(value: unknown, existed: boolean): ChangeKind {
   if (value === "deleted") return "deleted";
   if (value === "created") return "created";
@@ -70,10 +76,12 @@ function proposedKind(value: unknown, existed: boolean): ChangeKind {
 export class NormalizedEventProcessor {
   private readonly classifier: Classifier;
   private readonly notify: NotificationDispatcher;
+  private readonly dismiss: NotificationDismisser;
   private readonly rootCache = new Map<string, Promise<string>>();
   public constructor(options: NormalizedEventProcessorOptions = {}) {
     this.classifier = options.classifier ?? new DeterministicClassifier();
     this.notify = options.notify ?? dispatchNotifications;
+    this.dismiss = options.dismiss ?? dismissPendingNotifications;
   }
 
   private async rootFor(workspace: string): Promise<string> {
@@ -105,11 +113,12 @@ export class NormalizedEventProcessor {
   private async signal(
     session: SessionRecord,
     events: SessionEvent[],
+    blockedEventIds: readonly string[] = [],
   ): Promise<void> {
     if (events.length === 0) return;
     const config = loadConfigSync(session.cwd);
     try {
-      await this.notify(session.cwd, events, config, session.id);
+      await this.notify(session.cwd, events, config, session.id, { blockedEventIds });
     } catch {
       // Une notification native ne doit jamais rendre le Core indisponible.
     }
@@ -144,7 +153,7 @@ export class NormalizedEventProcessor {
     if (prompt === undefined) return;
     const { store, session } = await this.context(event);
     // Un nouveau tour commence : les alertes du précédent n'attendent plus rien.
-    await dismissPendingNotifications(session.cwd, session.id).catch(() => []);
+    await this.dismiss(session.cwd, session.id).catch(() => []);
     setCurrentIntent(session, prompt, "user-follow-up");
     await writeCurrentIntent(session.cwd, prompt, { turnId: nativeTurnId(event), sessionId: session.id });
     await store.save(session);
@@ -171,7 +180,8 @@ export class NormalizedEventProcessor {
     const accepted = appendSessionEvents(session, [candidate]);
     recordCurrentStatus(session.cwd, accepted);
     await store.save(session);
-    await this.signal(session, accepted);
+    const waitingForApproval = nativeHookEventName(event) === "PermissionRequest";
+    await this.signal(session, accepted, waitingForApproval ? accepted.map((item) => item.id) : []);
   }
 
   private async fileProposed(event: ScopeLightEvent): Promise<void> {
@@ -214,7 +224,8 @@ export class NormalizedEventProcessor {
     recordTurnTouchedPaths(session, candidate.turnId, [candidate.path as string]);
     recordCurrentStatus(session.cwd, accepted);
     await store.save(session);
-    await this.signal(session, accepted);
+    const waitingForApproval = nativeHookEventName(event) === "PermissionRequest";
+    await this.signal(session, accepted, waitingForApproval ? accepted.map((item) => item.id) : []);
   }
 
   private async planDeclared(event: ScopeLightEvent): Promise<void> {
@@ -231,7 +242,7 @@ export class NormalizedEventProcessor {
   private async toolCompleted(event: ScopeLightEvent): Promise<void> {
     const { store, session } = await this.context(event);
     // L'outil a tourné : la décision qu'attendait l'alerte est prise.
-    await dismissPendingNotifications(session.cwd, session.id).catch(() => []);
+    await this.dismiss(session.cwd, session.id).catch(() => []);
     const toolName = string(event.payload.toolName) ?? "";
     if (isReadLikeTool(toolName)) {
       const candidates = Array.isArray(event.payload.readFiles)
@@ -259,8 +270,16 @@ export class NormalizedEventProcessor {
     await this.signal(session, events);
   }
 
-  private async lifecycle(event: ScopeLightEvent, detail: string, endSession = false): Promise<void> {
+  private async lifecycle(
+    event: ScopeLightEvent,
+    detail: string,
+    endSession = false,
+    dismissPending = false,
+  ): Promise<void> {
     const { store, session } = await this.context(event);
+    if (dismissPending) {
+      await this.dismiss(session.cwd, session.id).catch(() => []);
+    }
     if (endSession) session.endedAt = event.timestamp;
     const lifecycle = eventFromFindings("lifecycle", [], session.cwd, detail);
     lifecycle.reasons = [detail];
@@ -300,10 +319,15 @@ export class NormalizedEventProcessor {
         await this.lifecycle(event, "Sous-agent terminé.");
         break;
       case "AGENT_STOPPED":
-        await this.lifecycle(event, "Tour Codex terminé.");
+        await this.lifecycle(event, "Tour Codex terminé.", false, true);
         break;
       case "SESSION_ENDED":
-        await this.lifecycle(event, `Session Codex terminée : ${string(event.payload.reason) ?? "other"}.`, true);
+        await this.lifecycle(
+          event,
+          `Session Codex terminée : ${string(event.payload.reason) ?? "other"}.`,
+          true,
+          true,
+        );
         break;
       case "TOOL_PROPOSED":
         break;

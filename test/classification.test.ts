@@ -270,6 +270,25 @@ test("file deletion is only a signal when it can reach the observed repository",
   assert.equal(code("rm -rf"), "destructive-file-command", "sans cible explicite : on reste prudent");
 });
 
+test("PowerShell cleanup of an isolated temporary test directory stays silent", () => {
+  const command = [
+    '$taskState = Join-Path $env:TEMP ("driftlight-notification-tests-" + [guid]::NewGuid().ToString("N"))',
+    'New-Item -ItemType Directory -Path $taskState | Out-Null',
+    '$resolvedState = [IO.Path]::GetFullPath($taskState)',
+    'Remove-Item -LiteralPath $resolvedState -Recurse -Force',
+  ].join("\n");
+
+  assert.equal(
+    classifyCommand(command, emptyBaseline).find((finding) => finding.code === "destructive-file-command"),
+    undefined,
+  );
+  assert.equal(
+    classifyCommand('$taskState = Join-Path $env:TEMP $name\nRemove-Item -LiteralPath $taskState -Recurse -Force', emptyBaseline)[0]?.code,
+    "destructive-file-command",
+    "un enfant variable reste impossible à résoudre statiquement",
+  );
+});
+
 test("command classification ignores dry-runs, branch checkout and heredoc bodies", () => {
   assert.deepEqual(classifyCommand("git clean -n", emptyBaseline), []);
   assert.deepEqual(classifyCommand("git clean -nfd", emptyBaseline), []);

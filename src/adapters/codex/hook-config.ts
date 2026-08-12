@@ -10,6 +10,10 @@ export const CODEX_HOOK_DEFINITIONS: ReadonlyArray<{ event: string; matcher?: st
   { event: "SessionStart", matcher: "*", timeout: 3 },
   { event: "SessionEnd", matcher: "other", timeout: 3 },
   { event: "UserPromptSubmit", timeout: 3 },
+  // Seul point où Codex attend déjà une réponse utilisateur. À la différence
+  // de PreToolUse, ce hook permet de caler la durée du voyant sur le dialogue
+  // natif Autoriser / Refuser sans inventer un second protocole d'approbation.
+  { event: "PermissionRequest", matcher: "*", timeout: 3 },
   { event: "PreToolUse", matcher: "*", timeout: 3 },
   { event: "PostToolUse", matcher: "*", timeout: 3 },
   { event: "SubagentStart", matcher: "*", timeout: 3 },

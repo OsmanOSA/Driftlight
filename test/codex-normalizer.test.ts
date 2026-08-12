@@ -67,6 +67,24 @@ test("Codex normalize PreToolUse Bash en outil proposé et commande proposée", 
   assert.equal("actionFingerprint" in (events[0]?.payload ?? {}), false);
 });
 
+test("Codex normalize PermissionRequest avant le dialogue natif", () => {
+  const events = normalizeCodexEvent({
+    ...common,
+    hook_event_name: "PermissionRequest",
+    turn_id: "turn_approval",
+    tool_name: "Bash",
+    tool_input: { command: "git clean -fd", description: "Nettoyer le dépôt" },
+  }, now);
+
+  assert.deepEqual(events.map((event) => event.event), ["TOOL_PROPOSED", "COMMAND_PROPOSED"]);
+  assert.equal(events[1]?.payload.command, "git clean -fd");
+  assert.equal(
+    (events[1]?.payload.native as Record<string, unknown>).hookEventName,
+    "PermissionRequest",
+  );
+  assert.equal(JSON.stringify(events).includes("Nettoyer le dépôt"), false);
+});
+
 test("Codex normalize PreToolUse apply_patch et extrait les fichiers", () => {
   const patch = `*** Begin Patch
 *** Add File: src/new file.ts

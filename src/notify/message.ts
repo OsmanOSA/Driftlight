@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { CurrentIntentState, SessionEvent } from "../domain/types.js";
+import type { ChangeKind, CurrentIntentState, SessionEvent } from "../domain/types.js";
 import { redactSensitiveText } from "../shared/redact.js";
 
 /**
@@ -16,6 +16,8 @@ import { redactSensitiveText } from "../shared/redact.js";
 const PROJECT_BUDGET = 28;
 const HEADLINE_BUDGET = 90;
 const INTENT_BUDGET = 80;
+/** Le bloc en chasse fixe du panneau dispose de trois lignes, pas d'une. */
+const EVIDENCE_BUDGET = 150;
 
 interface RuleWording {
   /** Ce qui se passe, en français, sans identifiant technique. */
@@ -116,19 +118,17 @@ export interface NotificationCopy {
 /**
  * Le titre décrit ce que DriftLight a fait, et rien de plus.
  *
- * Il a longtemps annoncé « action bloquée ». C'était faux deux fois : DriftLight
- * renvoie une demande de confirmation, il n'interrompt rien lui-même, et il n'a
- * aucun moyen de savoir si l'agent hôte a honoré cette demande — un mode de
- * permission permissif peut la contourner sans le prévenir. Promettre un blocage
- * qu'on ne contrôle pas est la pire chose qu'un voyant puisse faire : elle
- * transforme une alerte en fausse sécurité.
+ * « Action bloquée » est réservé au refus ferme (`deny`). Une demande de
+ * confirmation peut être contournée par un mode de permission permissif, et une
+ * alerte simplement enregistrée n'interrompt rien : leur attribuer le même
+ * verdict transformerait le voyant en fausse sécurité.
  */
 export type HookOutcome = "denied" | "asked" | "recorded";
 
 export function notificationTitle(root: string, event: SessionEvent, outcome: HookOutcome): string {
   const verdict = outcome === "denied"
     // Seul cas où une promesse d'arrêt est tenable : `deny` ne se contourne pas.
-    ? "action refusée"
+    ? "action bloquée"
     : outcome === "asked"
       ? "confirmation demandée"
       : event.level === "RED" ? "alerte rouge" : "à vérifier";
@@ -151,4 +151,103 @@ export function notificationMessage(
   if (requested) lines.push(`Vous aviez demandé : « ${clip(requested, INTENT_BUDGET)} »`);
   if (wording.action) lines.push(wording.action);
   return lines.join("\n");
+}
+
+// --- Description structurée ---------------------------------------------------
+
+/**
+ * La même alerte, en champs séparés plutôt qu'en un bloc de texte.
+ *
+ * Un toast Windows ne sait afficher que des lignes ; le panneau, lui, dessine
+ * une hiérarchie — verbe, énoncé, pièce à conviction en chasse fixe, suite
+ * donnée. Découper ici plutôt que dans le rendu garde une seule source aux
+ * mots : le panneau choisit la forme, jamais le vocabulaire.
+ *
+ * Tout champ vide se traduit par une rangée absente du panneau, pas par un
+ * trou : rien n'est obligatoire hors `headline` et `status`.
+ */
+export interface NotificationDetail {
+  /** Nature de l'action proposée, en un mot. */
+  verb: string;
+  /** Ce que DriftLight a vu, en clair. */
+  headline: string;
+  /** Le fichier ou la commande en cause, destiné à un rendu en chasse fixe. */
+  evidence: string;
+  /** Ce qui a pesé dans le verdict, en une ligne discrète. */
+  meta: string;
+  /** La demande d'origine, telle que l'utilisateur l'a écrite. */
+  intent: string;
+  /** La conduite à tenir, quand la règle a mieux à dire que l'évidence. */
+  action: string;
+  /** Ce que le hook a réellement obtenu de l'agent — jamais davantage. */
+  status: string;
+}
+
+const CHANGE_VERBS: Record<ChangeKind, string> = {
+  created: "Création",
+  modified: "Modification",
+  deleted: "Suppression",
+};
+
+function actionVerb(event: SessionEvent): string {
+  if (event.path === undefined) return "Commande";
+  return event.changeKind ? CHANGE_VERBS[event.changeKind] : "Écriture";
+}
+
+/**
+ * Le sujet au format du bloc en chasse fixe : plus large que dans le texte
+ * plat, où il doit cohabiter avec l'énoncé sur une seule ligne.
+ */
+export function evidenceText(event: SessionEvent, root: string): string {
+  if (event.path !== undefined) {
+    const relative = path.isAbsolute(event.path) ? path.relative(root, event.path) : event.path;
+    return clipPath(relative.replaceAll("\\", "/"), 90);
+  }
+  // Comme dans humanSubject : une commande peut porter un jeton en argument.
+  return event.detail === undefined ? "" : clip(redactSensitiveText(event.detail), EVIDENCE_BUDGET);
+}
+
+/**
+ * Ce sur quoi le verdict s'appuie, compté et non nommé.
+ *
+ * Le nombre de familles concordantes est ce qui distingue un signal isolé d'un
+ * faisceau, et c'est décidable d'un coup d'œil. Les identifiants qui les
+ * composent appartiennent à `driftlight explain`.
+ */
+export function evidenceMeta(event: SessionEvent): string {
+  const level = event.level === "RED" ? "Alerte rouge" : "À vérifier";
+  const families = event.scoreBreakdown.activeSignalFamilies?.length ?? 0;
+  if (families <= 1) return level;
+  return `${level} · ${families} signaux concordants`;
+}
+
+/**
+ * Ce que le hook a obtenu, et où la décision se prend.
+ *
+ * Même prudence que `notificationTitle` : seul `deny` autorise à parler d'arrêt.
+ * Nommer l'endroit où trancher évite d'avoir à chercher quelle fenêtre attend.
+ */
+const OUTCOME_STATUS: Record<HookOutcome, string> = {
+  denied: "Action refusée — l'agent ne l'exécutera pas",
+  asked: "Confirmation demandée dans l'agent",
+  recorded: "Alerte enregistrée — rien n'a été retenu",
+};
+
+export function notificationDetail(
+  root: string,
+  event: SessionEvent,
+  intent: CurrentIntentState | null,
+  outcome: HookOutcome,
+): NotificationDetail {
+  const wording = wordingFor(event);
+  const requested = intent?.text?.trim();
+  return {
+    verb: actionVerb(event),
+    headline: wording.headline,
+    evidence: evidenceText(event, root),
+    meta: evidenceMeta(event),
+    intent: requested ? `« ${clip(requested, INTENT_BUDGET)} »` : "",
+    action: wording.action ?? "",
+    status: OUTCOME_STATUS[outcome],
+  };
 }

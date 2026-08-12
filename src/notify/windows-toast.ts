@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { NativeNotification } from "./backend.js";
+import { panelEventName, safePanelReadyFile, showWindowsPanel } from "./windows-panel.js";
 
 const require = createRequire(import.meta.url);
 
@@ -92,19 +93,22 @@ export function buildToastXml(
   const lines = notification.message.split("\n").filter((line) => line.trim().length > 0);
   const body = lines.slice(0, TEXT_BUDGET - 1);
   const image = iconUri
-    ? `<image placement="appLogoOverride" hint-crop="circle" src="${escapeXml(iconUri)}"/>`
+    ? `<image placement="appLogoOverride" hint-crop="circle" src="${escapeXml(iconUri)}" alternateText="DriftLight"/>`
     : "";
   const attribution = notification.attribution && body.length + 1 < TEXT_BUDGET
-    ? `<text placement="attribution">${escapeXml(notification.attribution)}</text>`
+    ? `<text placement="attribution" hint-style="captionSubtle">${escapeXml(notification.attribution)}</text>`
     : "";
   const behaviour = notification.persistent ? 'scenario="reminder"' : 'duration="long"';
   const audio = notification.sound ? "" : '<audio silent="true"/>';
+  const bodyStyles = ["body", "captionSubtle", "bodySubtle"];
 
   return `<toast ${behaviour}>`
-    + "<visual><binding template=\"ToastGeneric\">"
+    + '<visual lang="fr-FR"><binding template="ToastGeneric">'
     + image
-    + `<text>${escapeXml(notification.title)}</text>`
-    + body.map((line) => `<text>${escapeXml(line)}</text>`).join("")
+    + `<text hint-style="title" hint-wrap="true" hint-maxLines="2">${escapeXml(notification.title)}</text>`
+    + body.map((line, index) => (
+      `<text hint-style="${bodyStyles[index] ?? "bodySubtle"}" hint-wrap="true" hint-maxLines="2">${escapeXml(line)}</text>`
+    )).join("")
     + attribution
     + "</binding></visual>"
     + audio
@@ -160,8 +164,12 @@ export function richToastScript(xml: string, appId: string, tag?: string): strin
  * enseigner.
  */
 export function dismissToastScript(tags: readonly string[], appId: string): string {
+  const panelEvents = tags.map(panelEventName);
   return [
     "$ErrorActionPreference='SilentlyContinue'",
+    `foreach($eventName in @(${panelEvents.map(quote).join(",")})){`,
+    "  try{ $signal=[Threading.EventWaitHandle]::OpenExisting($eventName); [void]$signal.Set(); $signal.Dispose() }catch{}",
+    "}",
     "[void][Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime]",
     "$history=[Windows.UI.Notifications.ToastNotificationManager]::History",
     `foreach($tag in @(${tags.map(quote).join(",")})){`,
@@ -243,7 +251,16 @@ async function showRichToast(notification: NativeNotification): Promise<boolean>
  * uniquement son processus après que Windows a enregistré le toast.
  */
 export async function showWindowsToast(notification: NativeNotification): Promise<void> {
-  if (await showRichToast(notification)) return;
+  // Le toast natif est la petite carte de notification de Windows. Pour une
+  // alerte persistante, son scénario `reminder` reste affiché indépendamment
+  // du processus qui l'a créé. Le panneau WPF ne sert plus que de repli : son
+  // lancement caché est plus fragile et ne doit pas remplacer un toast valide.
+  if (await showRichToast(notification)) {
+    const readyFile = safePanelReadyFile(notification.readyFile);
+    if (readyFile) writeFileSync(readyFile, "ready", { encoding: "utf8", mode: 0o600 });
+    return;
+  }
+  if (await showWindowsPanel(notification)) return;
 
   await new Promise<void>((resolve) => {
     let settled = false;
