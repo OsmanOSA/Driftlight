@@ -1,6 +1,14 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { CurrentIntentState, DriftLightConfig, SessionEvent, Severity } from "../domain/types.js";
 import { readOwnCurrentIntentSync } from "../intent/current-intent.js";
-import { loadNativeBackend, type BackendLoader, type NativeNotification, type NotifierBackend } from "./backend.js";
+import {
+  loadNativeBackend,
+  type BackendLoader,
+  type NativeNotification,
+  type NotificationAuthorization,
+  type NotifierBackend,
+} from "./backend.js";
 import { severityIconPath } from "./icons.js";
 import { notificationDetail, notificationMessage, notificationTitle, type HookOutcome } from "./message.js";
 import { NotificationLedger, type ReservationOutcome } from "./notified-log.js";
@@ -56,6 +64,34 @@ export function notificationSubject(event: SessionEvent): string {
   return event.path ?? event.detail ?? "action";
 }
 
+/** `dist/src/cli.js`, depuis n'importe quel module de `dist/src/notify/`. */
+function commandLineInterfacePath(): string {
+  return path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "cli.js");
+}
+
+/**
+ * Le geste que l'utilisateur peut faire depuis la notification.
+ *
+ * Réservé au refus ferme : c'est le seul moment où l'agent est arrêté et où
+ * quelque chose attend réellement une réponse. Autoriser inscrit le sujet au
+ * périmètre annoncé — cela n'exécute rien, et le tour de l'agent étant clos,
+ * la confirmation doit dire qu'il reste à redemander l'action.
+ */
+export function buildAuthorization(
+  root: string,
+  event: SessionEvent,
+): NotificationAuthorization | undefined {
+  const scope = event.path ?? event.detail;
+  if (scope === undefined || scope.trim() === "") return undefined;
+  return {
+    label: "Autoriser",
+    exe: process.execPath,
+    args: [commandLineInterfacePath(), "add-scope", "--cwd", root, scope],
+    confirmation: "Autorisé. Redemandez l'action à l'agent : son tour a été arrêté.",
+    failure: "L'autorisation a échoué. Passez par `driftlight add-scope`.",
+  };
+}
+
 export function buildNotification(
   root: string,
   event: SessionEvent,
@@ -76,6 +112,9 @@ export function buildNotification(
     message: notificationMessage(root, event, intent),
     detail: notificationDetail(root, event, intent, resolved),
     level: event.level,
+    ...(resolved === "denied"
+      ? { authorize: buildAuthorization(root, event) }
+      : {}),
     sound: config.notificationSound,
     ...(icon ? { icon } : {}),
   };

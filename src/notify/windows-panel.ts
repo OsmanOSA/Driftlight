@@ -24,7 +24,7 @@ export const WINDOWS_PANEL_WIDTH = 412;
  * de rangées vides. Chaque bloc étant lui-même borné, ce plafond n'est qu'un
  * filet de sécurité — la taille courante reste bien en dessous.
  */
-export const WINDOWS_PANEL_MAX_HEIGHT = 372;
+export const WINDOWS_PANEL_MAX_HEIGHT = 396;
 
 /**
  * Hiérarchie du panneau.
@@ -74,10 +74,21 @@ const PANEL_XAML = String.raw`<Window xmlns="http://schemas.microsoft.com/winfx/
           <Border Margin="0,12,0,0" Height="1" Background="#FF32353E"/>
           <Grid Margin="0,9,0,0">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-            <TextBlock x:Name="PanelStatusText" Grid.Column="0" Foreground="#FFB9B8C3" FontSize="11.5" FontWeight="SemiBold" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
-            <Border Grid.Column="2" CornerRadius="5" Padding="6,1,6,2" Background="#14FFFFFF" BorderThickness="1" BorderBrush="#26FFFFFF" VerticalAlignment="Center">
+            <TextBlock x:Name="PanelStatusText" Grid.Column="0" Foreground="#FFB9B8C3" FontSize="11.5" FontWeight="SemiBold" VerticalAlignment="Center" TextWrapping="Wrap" MaxHeight="30" TextTrimming="CharacterEllipsis"/>
+            <Border x:Name="PanelHint" Grid.Column="2" CornerRadius="5" Padding="6,1,6,2" Background="#14FFFFFF" BorderThickness="1" BorderBrush="#26FFFFFF" VerticalAlignment="Center">
               <TextBlock Text="Échap" Foreground="#FF9A99A5" FontSize="10.5" FontWeight="SemiBold"/>
             </Border>
+          </Grid>
+          <Grid x:Name="PanelDecision" Margin="0,11,0,0">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="9"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <Button x:Name="PanelKeep" Grid.Column="0" Height="31" Cursor="Hand" BorderThickness="0" Foreground="#FFDDDCE4" FontSize="12" FontWeight="SemiBold" AutomationProperties:AutomationProperties.Name="Garder le refus">
+              <Button.Template><ControlTemplate TargetType="Button"><Border x:Name="Surface" CornerRadius="8" Background="#18FFFFFF" BorderThickness="1" BorderBrush="#26FFFFFF"><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Surface" Property="Background" Value="#26FFFFFF"/></Trigger><Trigger Property="IsPressed" Value="True"><Setter TargetName="Surface" Property="Opacity" Value="0.65"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Button.Template>
+              <TextBlock Text="Garder le refus"/>
+            </Button>
+            <Button x:Name="PanelAuthorize" Grid.Column="2" Height="31" Cursor="Hand" BorderThickness="0" Foreground="#FF16171D" FontSize="12" FontWeight="SemiBold" AutomationProperties:AutomationProperties.Name="Autoriser cette action">
+              <Button.Template><ControlTemplate TargetType="Button"><Border x:Name="Surface" CornerRadius="8" BorderThickness="0"><Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#FFF4F4F7" Offset="0"/><GradientStop Color="#FFD3D4DC" Offset="1"/></LinearGradientBrush></Border.Background><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Surface" Property="Opacity" Value="0.9"/></Trigger><Trigger Property="IsPressed" Value="True"><Setter TargetName="Surface" Property="Opacity" Value="0.72"/></Trigger><Trigger Property="IsEnabled" Value="False"><Setter TargetName="Surface" Property="Opacity" Value="0.4"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Button.Template>
+              <TextBlock x:Name="PanelAuthorizeLabel" Text="Autoriser"/>
+            </Button>
           </Grid>
         </StackPanel>
       </Grid>
@@ -86,6 +97,17 @@ const PANEL_XAML = String.raw`<Window xmlns="http://schemas.microsoft.com/winfx/
 </Window>`;
 
 export interface WindowsPanelPayload {
+  /**
+   * Décision offerte à l'utilisateur, absente pour toute alerte qui n'a rien
+   * arrêté : un bouton sans conséquence est un mensonge poli.
+   */
+  authorize?: {
+    label: string;
+    exe: string;
+    args: string[];
+    confirmation: string;
+    failure: string;
+  };
   context: string;
   verb: string;
   headline: string;
@@ -169,6 +191,7 @@ export function windowsPanelPayload(notification: NativeNotification): WindowsPa
     sound: notification.sound,
     accentStart: red ? "#FFFFA079" : "#FFFFC66B",
     accentEnd: red ? "#FFCA5C78" : "#FFD58B4E",
+    ...(notification.authorize ? { authorize: notification.authorize } : {}),
     ...(notification.tag ? { eventName: panelEventName(notification.tag) } : {}),
     ...(readyFile ? { readyFile } : {}),
   };
@@ -214,6 +237,27 @@ export function windowsPanelScript(notification: NativeNotification): string {
     "$window.Left=$work.Right-$window.Width-18",
     "$window.Top=$work.Bottom-260",
     "$place={$window.Left=$work.Right-$window.ActualWidth-18;$window.Top=$work.Bottom-$window.ActualHeight-18}.GetNewClosure()",
+    // Sans décision en attente, la rangée disparaît : l'alerte n'a rien retenu,
+    // il n'y a rien à trancher.
+    "$decision=$window.FindName('PanelDecision')",
+    "$authorize=$window.FindName('PanelAuthorize')",
+    "if(-not $payload.authorize){$decision.Visibility=[Windows.Visibility]::Collapsed}else{",
+    "  $window.FindName('PanelAuthorizeLabel').Text=$payload.authorize.label",
+    "  $window.FindName('PanelHint').Visibility=[Windows.Visibility]::Collapsed",
+    "  $window.FindName('PanelKeep').Add_Click({$window.Close()}.GetNewClosure())",
+    // Les arguments partent en tableau, jamais en ligne de commande : aucun
+    // chemin ni texte d'alerte ne traverse d'interpréteur.
+    "  $authorize.Add_Click({",
+    "    $authorize.IsEnabled=$false",
+    "    $ok=$false",
+    "    try{ $p=Start-Process -FilePath $payload.authorize.exe -ArgumentList $payload.authorize.args -WindowStyle Hidden -PassThru -Wait; $ok=($p.ExitCode -eq 0) }catch{ $ok=$false }",
+    "    $status=$window.FindName('PanelStatusText')",
+    "    $status.Text=$(if($ok){$payload.authorize.confirmation}else{$payload.authorize.failure})",
+    "    $decision.Visibility=[Windows.Visibility]::Collapsed",
+    // L'utilisateur doit voir que son geste a porté : la fenêtre reste, et cesse
+    // seulement de réclamer une décision déjà rendue.
+    "  }.GetNewClosure())",
+    "}",
     "$close.Add_Click({$window.Close()})",
     "$window.Add_KeyDown({if($_.Key -eq [Windows.Input.Key]::Escape){$window.Close()}})",
     "$signal=$null",

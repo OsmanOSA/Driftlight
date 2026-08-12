@@ -20,6 +20,22 @@ import type { NotificationDetail } from "./message.js";
 
 const BACKEND_MODULE = "node-notifier";
 
+/**
+ * Ce qu'un bouton de la notification déclenche réellement.
+ *
+ * Autoriser n'exécute pas l'action refusée : cela inscrit le sujet au périmètre
+ * annoncé, de sorte qu'une nouvelle tentative passe. Le tour de l'agent, lui,
+ * est déjà clos — rien ne peut le relancer depuis l'extérieur, et `confirmation`
+ * doit donc dire à l'utilisateur qu'il lui reste à redemander l'action.
+ */
+export interface NotificationAuthorization {
+  label: string;
+  exe: string;
+  args: string[];
+  confirmation: string;
+  failure: string;
+}
+
 export interface NativeNotification {
   title: string;
   message: string;
@@ -50,6 +66,17 @@ export interface NativeNotification {
    * pour dessiner une hiérarchie plutôt qu'empiler des lignes.
    */
   detail?: NotificationDetail;
+  /**
+   * Décision que l'utilisateur peut rendre depuis la notification elle-même.
+   *
+   * N'accompagne que le refus ferme : c'est le seul cas où l'agent est arrêté
+   * et où quelque chose attend vraiment une réponse. Une notification qui
+   * n'interrompt rien n'a pas à proposer de trancher.
+   *
+   * La commande est transportée décomposée — exécutable et arguments séparés —
+   * pour qu'aucun chemin ni texte d'alerte n'ait à traverser un interpréteur.
+   */
+  authorize?: NotificationAuthorization;
   /** Accusé de démarrage interne du panneau de prévisualisation Windows. */
   readyFile?: string;
 }
@@ -93,6 +120,7 @@ export function notificationFromPayload(payload: Partial<NativeNotification>): N
     sound: payload.sound ?? true,
     ...(payload.level ? { level: payload.level } : {}),
     ...(payload.detail ? { detail: payload.detail } : {}),
+    ...(payload.authorize ? { authorize: payload.authorize } : {}),
     ...(payload.persistent === true ? { persistent: true } : {}),
     ...(payload.attribution ? { attribution: payload.attribution } : {}),
     ...(payload.tag ? { tag: payload.tag } : {}),

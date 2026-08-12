@@ -170,6 +170,59 @@ test("the preview announces itself instead of borrowing a verdict", () => {
   }
 });
 
+/**
+ * Le panneau ne propose de trancher que lorsqu'il y a réellement quelque chose
+ * en attente.
+ *
+ * Un refus ferme arrête l'agent : la décision revient à l'utilisateur, et lui
+ * offrir le geste sur place lui évite de retrouver une commande à taper. Une
+ * alerte qui n'a rien retenu n'attend rien — un bouton y serait décoratif,
+ * exactement le mensonge poli que ce projet a déjà eu à retirer trois fois.
+ */
+test("only a firm refusal offers a decision on the panel", () => {
+  const refused = buildNotification("/repo", event("e1", "RED"), config(), "denied");
+  assert.ok(refused.authorize, "un refus arrête l'agent : le geste doit être offert");
+  assert.equal(refused.authorize?.args.includes("add-scope"), true);
+  assert.equal(
+    refused.authorize?.args.includes("src/secret.ts"),
+    true,
+    "c'est le sujet de l'alerte qui est autorisé, pas autre chose",
+  );
+  // Le tour de l'agent est clos : rien ne peut le relancer, et le dire évite
+  // d'attendre en vain devant un panneau.
+  assert.match(refused.authorize?.confirmation ?? "", /Redemandez/i);
+
+  for (const outcome of ["asked", "recorded"] as const) {
+    assert.equal(
+      buildNotification("/repo", event("e1", "RED"), config(), outcome).authorize,
+      undefined,
+      `rien n'a été retenu (${outcome}) : aucun bouton ne doit apparaître`,
+    );
+  }
+});
+
+/**
+ * Le sujet d'une alerte vient de l'agent : chemin, ou commande entière. Le
+ * faire traverser un interpréteur en ferait un vecteur d'exécution, dans le
+ * processus même qui prétend surveiller.
+ */
+test("the panel's decision never assembles a command line", () => {
+  const hostile = event("e1", "RED", {
+    path: undefined,
+    detail: 'rm -rf x"; Start-Process calc; #',
+  });
+  const refused = buildNotification("/repo", hostile, config(), "denied");
+
+  assert.deepEqual(
+    refused.authorize?.args.at(-1),
+    'rm -rf x"; Start-Process calc; #',
+    "le sujet reste un argument entier, jamais concaténé",
+  );
+  const script = windowsPanelScript(refused);
+  assert.ok(!script.includes("Start-Process calc"), "le texte hostile ne doit pas figurer en clair");
+  assert.match(script, /-ArgumentList \$payload\.authorize\.args/, "les arguments partent en tableau");
+});
+
 // --- Libellé dérivé de l'issue réelle du hook ---------------------------------
 
 test("the notification title states what actually happened, not the severity", () => {
