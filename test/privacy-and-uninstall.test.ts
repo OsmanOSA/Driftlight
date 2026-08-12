@@ -120,6 +120,14 @@ test("the licence travels with the package, and is referenced by it", async () =
   assert.match(licence, /node-notifier/, "les composants tiers doivent être reconnus");
   assert.match(licence, /LGPL-3\.0/, "SnoreToast est sous LGPL et doit être nommé");
   assert.match(licence, /driftlight claude uninstall/, "la sortie doit être écrite noir sur blanc");
+
+  // Une licence diffusée avec ses marques de rédaction dit au lecteur que le
+  // titulaire des droits n'est pas arrêté — ce qui la vide de sa portée.
+  for (const marker of ["[VOTRE", "[PAYS", "REMPLACEZ", "À COMPLÉTER", "TODO"]) {
+    assert.ok(!licence.includes(marker), `mention de rédaction encore présente : ${marker}`);
+  }
+  assert.match(licence, /Copyright \(c\) \d{4} \S/, "le titulaire des droits doit être nommé");
+  assert.doesNotMatch(licence, /régie par le droit \[/, "le droit applicable doit être choisi");
 });
 
 // --- Désinstallation ----------------------------------------------------------
