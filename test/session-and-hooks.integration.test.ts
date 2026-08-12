@@ -282,6 +282,53 @@ test("enforceRed never still holds destruction of unsaved work", async (context)
   assert.equal(output?.hookSpecificOutput?.permissionDecision, "ask");
 });
 
+/**
+ * Une suppression récursive dirigée vers le dépôt emporte ce qui n'est pas
+ * commité, exactement comme une commande Git destructrice. Elle ne sortait
+ * pourtant qu'en `ask` — que le mode de permission de la session peut écarter
+ * sans rien dire. L'utilisateur voyait alors l'alerte passer pendant que
+ * l'agent poursuivait : le voyant annonçait une retenue qu'il n'obtenait pas.
+ */
+test("a recursive deletion inside the repository is refused, not merely queried", async (context) => {
+  const root = await setupPreexistingWork(context);
+  await handleClaudeHook(hook(root, "UserPromptSubmit", {
+    prompt: "Nettoie le dossier de sources",
+    prompt_id: "turn-rm",
+  }));
+
+  const output = await handleClaudeHook(hook(root, "PreToolUse", {
+    tool_name: "Bash",
+    tool_input: { command: "rm -rf src" },
+  }));
+
+  assert.equal(
+    output?.hookSpecificOutput?.permissionDecision,
+    "deny",
+    "un `ask` se contourne par le mode de permission ; la perte, elle, ne se défait pas",
+  );
+  assert.match(output?.hookSpecificOutput?.permissionDecisionReason ?? "", /destructive-file-command/);
+});
+
+/**
+ * Le pendant du test précédent : c'est bien la présence de travail non
+ * sauvegardé qui justifie la fermeté, pas le nom de la commande. Sans rien à
+ * perdre, un refus ferme serait un obstacle gratuit.
+ */
+test("the same deletion in a clean repository only asks", async (context) => {
+  const root = await setup(context);
+  await handleClaudeHook(hook(root, "UserPromptSubmit", {
+    prompt: "Nettoie le dossier de sources",
+    prompt_id: "turn-rm-clean",
+  }));
+
+  const output = await handleClaudeHook(hook(root, "PreToolUse", {
+    tool_name: "Bash",
+    tool_input: { command: "rm -rf src" },
+  }));
+
+  assert.equal(output?.hookSpecificOutput?.permissionDecision, "ask");
+});
+
 test("an explicitly named file is never signaled, including a sensitive path", async (context) => {
   const root = await setup(context);
   await handleClaudeHook(hook(root, "UserPromptSubmit", {

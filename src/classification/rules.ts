@@ -195,6 +195,22 @@ function shellAssignments(command: string): Map<string, string> {
     values.set(name, path.join(os.tmpdir(), `${prefix}00000000000000000000000000000000`));
   }
 
+  // Équivalent POSIX de la forme ci-dessus, et de très loin la première source
+  // de rouge injustifié mesurée en usage réel : `H=$(mktemp -d)` puis
+  // `rm -rf "$H"` est la façon canonique d'isoler un test, et onze alertes d'une
+  // même session d'observation n'étaient que cette commande-là, répétée.
+  //
+  // `mktemp -d` sans argument crée toujours son dossier sous TMPDIR, jamais dans
+  // le dépôt. Un gabarit ou un `-p` explicite peut en revanche désigner
+  // n'importe où : ces formes restent inconnues, donc signalées.
+  const temporaryShellDirectory =
+    /(?:^|\r?\n|;|&&|\|\|)\s*([A-Za-z_][A-Za-z0-9_]*)=(?:\$\(\s*mktemp\s+(?:-d|--directory)\s*\)|`\s*mktemp\s+(?:-d|--directory)\s*`)\s*(?=$|\r?\n|;|&&|\|\|)/g;
+  for (const match of command.matchAll(temporaryShellDirectory)) {
+    const name = match[1];
+    if (name === undefined) continue;
+    values.set(name, path.join(os.tmpdir(), "tmp.00000000000000000000000000000000"));
+  }
+
   // GetFullPath ne change pas la cible d'une valeur déjà résolue. Cette copie
   // est limitée à une variable connue ; elle ne transforme jamais une valeur
   // ambiguë en chemin réputé sûr.

@@ -66,7 +66,14 @@ export interface ClaudeHookOutput {
  */
 function destroysUnrecoverableWork(event: SessionEvent, session: SessionRecord): boolean {
   if (event.stage === "absolute") return true;
-  return event.ruleId === "destructive-git-command" && session.baseline.files.length > 0;
+  // Une suppression récursive dirigée vers le dépôt emporte exactement ce
+  // qu'emporte une commande Git destructrice : ce qui n'est pas encore commité.
+  // Les séparer n'avait pas de justification — `rm -rf src` laissait une simple
+  // demande de confirmation, qu'un mode de permission permissif écarte sans
+  // rien dire, alors que la perte est tout aussi définitive.
+  const erasesUncommittedWork = event.ruleId === "destructive-git-command"
+    || event.ruleId === "destructive-file-command";
+  return erasesUncommittedWork && session.baseline.files.length > 0;
 }
 
 async function sessionContext(input: ClaudeHookInput): Promise<{
