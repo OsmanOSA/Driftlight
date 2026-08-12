@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -13,6 +13,30 @@ export const PROJECT_MARKER = "project.json";
 export function driftlightHome(): string {
   const configured = process.env.DRIFTLIGHT_HOME;
   return configured ? path.resolve(configured) : path.join(os.homedir(), ".driftlight");
+}
+
+/**
+ * L'état contient les demandes de l'utilisateur et les commandes proposées.
+ * Sur une machine partagée, les droits par défaut d'un dossier POSIX (0755)
+ * les rendraient lisibles par les autres comptes locaux ; 0700 réserve la
+ * lecture à son propriétaire. Windows ignore ce mode et applique les ACL du
+ * profil, déjà privées.
+ */
+export const STATE_DIRECTORY_MODE = 0o700;
+
+let homePrepared = false;
+
+export function ensurePrivateHome(): string {
+  const home = driftlightHome();
+  if (homePrepared) return home;
+  try {
+    mkdirSync(home, { recursive: true, mode: STATE_DIRECTORY_MODE });
+    if (process.platform !== "win32") chmodSync(home, STATE_DIRECTORY_MODE);
+  } catch {
+    // Un état non créable sera signalé par l'écriture qui suit, pas ici.
+  }
+  homePrepared = true;
+  return home;
 }
 
 /** Nom lisible suivi d'une empreinte : deux `api/` distincts ne se mélangent pas. */
@@ -47,7 +71,7 @@ export function projectStateDirectory(root: string): string {
   const cached = resolvedDirectories.get(resolved);
   if (cached) return cached;
 
-  const central = path.join(driftlightHome(), "projects", projectSlug(resolved));
+  const central = path.join(ensurePrivateHome(), "projects", projectSlug(resolved));
   const legacy = path.join(resolved, ".driftlight");
   let chosen = central;
 

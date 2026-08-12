@@ -44,6 +44,33 @@ Sous PowerShell, si la politique d'exécution bloque `npm.ps1`, utilisez simplem
 
 Pendant le développement, lancez le CLI avec `node dist/src/cli.js`. Après installation comme paquet, la commande est `driftlight`.
 
+## Ce qui est écrit sur votre machine
+
+DriftLight observe des sessions entières : vos demandes et les commandes proposées par l'agent passent par lui. Voici exactement ce qu'il en fait.
+
+**Rien ne quitte la machine.** Aucun appel réseau, aucune télémétrie, aucun service tiers. Le code ne contient pas une seule requête sortante.
+
+**Aucune écriture dans vos dépôts.** Tout l'état vit sous `~/.driftlight/projects/<projet>/`, créé en `0700` — lisible par votre seul compte. Seul `.driftlight/config.json`, si vous en créez un, appartient au projet.
+
+| Écrit sur disque | Jamais écrit |
+| --- | --- |
+| Vos demandes (l'intention du tour) | Le contenu des fichiers |
+| Les chemins touchés et les verdicts | Le contenu des secrets détectés |
+| Le texte des commandes ayant déclenché une alerte, **expurgé** | Les jetons, clés et mots de passe reconnus |
+
+Les motifs de secrets courants — clés AWS, jetons `sk-…`, en-têtes `Bearer`, `password=` — sont remplacés par `[REDACTED]` **avant** toute écriture et avant tout affichage. Un contenu de fichier n'est jamais conservé : il sert à classer, puis disparaît.
+
+Pour inspecter ou effacer :
+
+```bash
+driftlight projects            # tout ce qui est stocké, et sa taille
+driftlight projects --purge    # supprime l'état des projets disparus
+driftlight claude uninstall    # retire les hooks (--global pour la machine entière)
+driftlight notify uninstall    # retire l'identité de notification (Windows)
+```
+
+Retirer entièrement DriftLight : `driftlight claude uninstall --global`, puis supprimer `~/.driftlight`.
+
 ## Démonstration locale minimale
 
 Dans un dépôt Git de test, ouvrez un premier terminal :

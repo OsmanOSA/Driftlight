@@ -16,7 +16,7 @@ import { severityIconPath } from "./notify/icons.js";
 import { identityStatus, installIdentity, removeIdentity } from "./notify/identity.js";
 import { loadScoringConfigSync } from "./config/scoring-config.js";
 import { runHookSafely, type SafeHookOutcome } from "./claude/safe-hook.js";
-import { installClaudeHooks, isInstalledPackage } from "./claude/installer.js";
+import { installClaudeHooks, isInstalledPackage, uninstallClaudeHooks } from "./claude/installer.js";
 import type { ClaudeHookInput, SessionRecord } from "./domain/types.js";
 import { loadConfigSync } from "./config/config.js";
 import { captureGitBaseline, resolveObservableRoot } from "./git/baseline.js";
@@ -72,6 +72,7 @@ Commandes :
   driftlight add-scope "Nouvelle instruction ou chemin" [--session latest] [--cwd .]
   driftlight ack [--cwd .]
   driftlight claude install [--global] [--cwd .]
+  driftlight claude uninstall [--global] [--cwd .]
   driftlight codex connect
   driftlight codex disconnect
   driftlight codex status
@@ -230,9 +231,21 @@ async function runAck(args: string[]): Promise<void> {
 }
 
 async function runClaude(args: string[]): Promise<void> {
-  if (args[1] !== "install") throw new Error("Commande attendue : driftlight claude install [--global]");
   const cwd = path.resolve(option(args, "--cwd") ?? process.cwd());
   const global = args.includes("--global");
+
+  if (args[1] === "uninstall") {
+    const { settingsPath, removed } = await uninstallClaudeHooks({ cwd, global });
+    console.log(removed > 0
+      ? `✓ ${removed} hook(s) DriftLight retiré(s) de ${settingsPath}`
+      : `Aucun hook DriftLight dans ${settingsPath}.`);
+    console.log("  L'état déjà enregistré reste sous "
+      + `${path.join(driftlightHome(), "projects")} ; \`driftlight projects --purge\` le supprime.`);
+    return;
+  }
+  if (args[1] !== "install") {
+    throw new Error("Commande attendue : driftlight claude install|uninstall [--global]");
+  }
   const settingsPath = await installClaudeHooks({ cwd, global });
   const packaged = isInstalledPackage(process.argv[1] ?? "");
   console.log(`✓ Hooks Claude Code installés sans remplacer les hooks existants : ${settingsPath}`);

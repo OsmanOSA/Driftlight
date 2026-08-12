@@ -16,6 +16,7 @@ import { updateImportGraph } from "../profile/import-graph.js";
 import { dismissPendingNotifications, dispatchNotifications } from "../notify/dispatcher.js";
 import { suppressedByCap } from "../notify/notified-log.js";
 import { safeIdentifier } from "../shared/paths.js";
+import { redactSensitiveText } from "../shared/redact.js";
 import {
   appendSessionEvents,
   classifyProposedFileChange,
@@ -238,7 +239,16 @@ export async function handleClaudeHook(input: ClaudeHookInput): Promise<ClaudeHo
         currentIntent ? { text: currentIntent.text, scopeAdditions: currentIntent.scopeAdditions } : undefined,
       );
       if (findings.length > 0) {
-        const event = eventFromFindings("proposed-action", findings, session.cwd, command.slice(0, 160));
+        // La classification voit la commande telle quelle ; ce qui est conservé
+        // et réaffiché est expurgé. Un jeton passé en argument finirait sinon
+        // en clair dans l'historique de session, sur le disque, et dans le
+        // message rendu à l'agent.
+        const event = eventFromFindings(
+          "proposed-action",
+          findings,
+          session.cwd,
+          redactSensitiveText(command).slice(0, 160),
+        );
         const intent = currentIntent;
         if (intent) {
           event.intentVersion = intent.version;

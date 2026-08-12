@@ -86,6 +86,44 @@ export function mergeClaudeHookSettings(settings: Settings, handler: HookHandler
   return settings;
 }
 
+/**
+ * Retire les hooks DriftLight d'une configuration Claude Code.
+ *
+ * Un outil qu'on ne sait pas désinstaller ne se partage pas : un testeur doit
+ * pouvoir revenir en arrière sans éditer un JSON à la main. Seules nos propres
+ * entrées sont retirées — reconnues à leur argument `hook` — et les groupes
+ * appartenant à d'autres outils sont laissés intacts.
+ */
+export function removeClaudeHookSettings(settings: Settings): { settings: Settings; removed: number } {
+  if (!isObject(settings.hooks)) return { settings, removed: 0 };
+  const hooks = settings.hooks;
+  let removed = 0;
+
+  for (const [event, configured] of Object.entries(hooks)) {
+    if (!Array.isArray(configured)) continue;
+    const groups: unknown[] = [];
+    for (const group of configured) {
+      if (!isHookGroup(group)) {
+        groups.push(group);
+        continue;
+      }
+      const kept = group.hooks.filter((item) => {
+        const ours = isObject(item) && JSON.stringify(item.args ?? "").includes("\"hook\"");
+        if (ours) removed += 1;
+        return !ours;
+      });
+      // Un groupe vidé de nos hooks n'a plus de raison d'être ; un groupe qui
+      // en contenait d'autres est conservé tel quel.
+      if (kept.length > 0) groups.push({ ...group, hooks: kept });
+    }
+    if (groups.length > 0) hooks[event] = groups;
+    else delete hooks[event];
+  }
+
+  if (Object.keys(hooks).length === 0) delete settings.hooks;
+  return { settings, removed };
+}
+
 export interface InstallClaudeHooksOptions {
   cwd: string;
   nodeExecutable?: string;
@@ -151,4 +189,23 @@ export async function installClaudeHooks(options: InstallClaudeHooksOptions): Pr
   mergeClaudeHookSettings(settings, handler);
   await writeJsonAtomic(settingsPath, settings);
   return settingsPath;
+}
+
+export async function uninstallClaudeHooks(
+  options: { cwd: string; global?: boolean },
+): Promise<{ settingsPath: string; removed: number }> {
+  const settingsPath = claudeSettingsPath(options);
+  let settings: Settings;
+  try {
+    const parsed: unknown = JSON.parse(await fs.readFile(settingsPath, "utf8"));
+    if (!isObject(parsed)) return { settingsPath, removed: 0 };
+    settings = parsed;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { settingsPath, removed: 0 };
+    throw error;
+  }
+
+  const { removed } = removeClaudeHookSettings(settings);
+  if (removed > 0) await writeJsonAtomic(settingsPath, settings);
+  return { settingsPath, removed };
 }
