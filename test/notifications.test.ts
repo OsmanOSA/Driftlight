@@ -37,6 +37,7 @@ import {
 } from "../src/notify/windows-toast.js";
 import {
   panelEventName,
+  PANEL_CONFIRMATION_MS,
   WINDOWS_PANEL_CONFIRM_MS,
   WINDOWS_PANEL_MAX_HEIGHT,
   WINDOWS_PANEL_STARTUP_MS,
@@ -112,19 +113,37 @@ const config = (overrides: Partial<DriftLightConfig> = {}): DriftLightConfig => 
 });
 
 /**
- * Sous Windows, la gravité choisit la surface : le panneau dense pour le rouge,
- * le toast persistant pour le reste. Transportée nulle part, chaque alerte
- * retomberait silencieusement sur le toast — une perte invisible à l'œil, car
- * la notification arriverait quand même.
+ * Ce n'est pas la gravité qui choisit la surface, mais l'interruption.
+ *
+ * Le panneau s'impose à l'écran et attend une décision : il ne se justifie que
+ * si l'agent est réellement arrêté. Ouvert pour toute alerte rouge, il
+ * apparaissait au début de l'appel d'outil et repartait à sa fin — pour une
+ * commande rapide, un clignotement qu'on n'a pas le temps de lire.
  */
-test("the alert carries its severity so the display surface can be chosen", () => {
-  assert.equal(buildNotification("/repo", event("e1", "RED"), config(), "asked").level, "RED");
-  assert.equal(buildNotification("/repo", event("e2", "ORANGE"), config(), "recorded").level, "ORANGE");
+test("only an alert that stopped the agent claims the screen", () => {
+  const halting = buildNotification("/repo", event("e1", "RED"), config(), "denied");
+  assert.equal(halting.halted, true);
 
-  // Le repli n'a lieu qu'après cette attente : au-delà, une alerte rouge
-  // resterait invisible pendant ce temps-là parce que le panneau est mort-né.
+  for (const outcome of ["asked", "recorded"] as const) {
+    assert.equal(
+      buildNotification("/repo", event("e1", "RED"), config(), outcome).halted,
+      undefined,
+      `rien n'a été retenu (${outcome}) : le toast suffit, et se laisse relire`,
+    );
+  }
+
+  // Refus sans arrêt : la décision n'attend nulle part, le panneau non plus.
+  const withoutHalt = buildNotification("/repo", event("e1", "RED"), config({ haltOnRefusal: false }), "denied");
+  assert.equal(withoutHalt.halted, undefined);
+  assert.equal(withoutHalt.authorize, undefined, "sans arrêt, aucun geste n'est en attente");
+
+  // Le repli n'a lieu qu'après cette attente : au-delà, une alerte qui a coupé
+  // le tour resterait invisible pendant ce temps-là, panneau mort-né.
   assert.ok(WINDOWS_PANEL_CONFIRM_MS <= 5_000);
   assert.ok(WINDOWS_PANEL_CONFIRM_MS < WINDOWS_PANEL_STARTUP_MS, "plus court que le budget d'aperçu");
+  // Une décision rendue ne doit pas laisser d'écriteau à ranger à la main.
+  assert.ok(PANEL_CONFIRMATION_MS > 3_000, "assez pour lire la confirmation");
+  assert.ok(PANEL_CONFIRMATION_MS <= 10_000, "trop court pour devenir un écriteau");
 });
 
 /**
@@ -221,6 +240,8 @@ test("the panel's decision never assembles a command line", () => {
   const script = windowsPanelScript(refused);
   assert.ok(!script.includes("Start-Process calc"), "le texte hostile ne doit pas figurer en clair");
   assert.match(script, /-ArgumentList \$payload\.authorize\.args/, "les arguments partent en tableau");
+  // Une fois la décision rendue, le panneau se retire de lui-même.
+  assert.match(script, /\$after\.Start\(\)/, "la confirmation doit être suivie d'une fermeture");
 });
 
 // --- Libellé dérivé de l'issue réelle du hook ---------------------------------

@@ -112,8 +112,8 @@ export function buildNotification(
     message: notificationMessage(root, event, intent),
     detail: notificationDetail(root, event, intent, resolved),
     level: event.level,
-    ...(resolved === "denied"
-      ? { authorize: buildAuthorization(root, event) }
+    ...(resolved === "denied" && config.haltOnRefusal
+      ? { halted: true, authorize: buildAuthorization(root, event) }
       : {}),
     sound: config.notificationSound,
     ...(icon ? { icon } : {}),

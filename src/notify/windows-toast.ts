@@ -256,20 +256,21 @@ async function showRichToast(notification: NativeNotification): Promise<boolean>
  * uniquement son processus après que Windows a enregistré le toast.
  */
 export async function showWindowsToast(notification: NativeNotification): Promise<void> {
-  // Deux surfaces, deux faiblesses opposées, et le niveau tranche entre elles.
+  // Deux surfaces, et c'est l'interruption qui tranche entre elles — pas la
+  // gravité.
   //
-  // Windows plafonne un toast à quatre éléments de texte : il ne peut pas porter
-  // à la fois ce qui se passe, sur quoi, ce qui avait été demandé et ce que le
-  // hook a obtenu. Le panneau le peut, mais c'est une fenêtre vivante — elle ne
-  // survit ni à une veille ni à la mort de son processus, et ne laisse rien au
-  // centre de notifications.
+  // Le panneau s'impose à l'écran, porte la décision et attend qu'on la rende.
+  // Il ne se justifie donc que si l'agent est réellement arrêté. Utilisé pour
+  // toute alerte rouge, il s'ouvrait au début de l'appel d'outil et disparaissait
+  // à sa fin : pour une commande rapide, un clignotement illisible.
   //
-  // Une alerte rouge retient une décision et se prend au clavier, tout de suite :
-  // elle a besoin de tout dire. Une orange informe et peut attendre d'être
-  // relue plus tard : elle a besoin de durer. Le panneau doit toutefois prouver
-  // qu'il s'est affiché, faute de quoi on revient au toast — perdre la densité
-  // est acceptable, perdre l'alerte ne l'est pas.
-  if (notification.level === "RED" && await showWindowsPanel(notification, WINDOWS_PANEL_CONFIRM_MS)) {
+  // Le toast, lui, est plafonné par Windows à quatre éléments de texte — il ne
+  // peut pas tout porter — mais il survit à son processus et se relit au centre
+  // de notifications. C'est ce qu'il faut à une alerte qui informe sans retenir.
+  //
+  // Le panneau doit prouver qu'il s'est affiché, faute de quoi on revient au
+  // toast : perdre la densité est acceptable, perdre l'alerte ne l'est pas.
+  if (notification.halted === true && await showWindowsPanel(notification, WINDOWS_PANEL_CONFIRM_MS)) {
     return;
   }
   if (await showRichToast(notification)) {

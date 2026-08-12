@@ -43,10 +43,21 @@ export interface NativeNotification {
   /** Pastille de sévérité. Facultative : voir notify/icons.ts. */
   icon?: string;
   /**
-   * Gravité de l'alerte. Elle choisit la surface d'affichage sous Windows, et
-   * évite d'avoir à la déduire du nom d'un fichier d'icône ou d'un titre.
+   * Gravité de l'alerte. Elle sert au rendu, et évite d'avoir à la déduire du
+   * nom d'un fichier d'icône ou d'un titre.
    */
   level?: Severity;
+  /**
+   * L'agent a été arrêté par cette alerte, et la main revient à l'utilisateur.
+   *
+   * C'est ce qui choisit la surface sous Windows, et non la gravité. Le panneau
+   * s'impose à l'écran et attend : il ne se justifie que si quelque chose attend
+   * réellement. Une alerte qui n'a rien retenu partait sinon en panneau elle
+   * aussi, ouvert au début de l'appel d'outil et retiré à sa fin — soit, pour
+   * une commande rapide, un clignotement qu'on n'a pas le temps de lire. Le
+   * toast, lui, se laisse relire au centre de notifications.
+   */
+  halted?: boolean;
   /**
    * Maintient la notification à l'écran jusqu'à ce que l'utilisateur l'écarte.
    * Réservé aux alertes qui retiennent une action : disparaître pendant qu'on
@@ -119,6 +130,7 @@ export function notificationFromPayload(payload: Partial<NativeNotification>): N
     message: payload.message ?? "",
     sound: payload.sound ?? true,
     ...(payload.level ? { level: payload.level } : {}),
+    ...(payload.halted === true ? { halted: true } : {}),
     ...(payload.detail ? { detail: payload.detail } : {}),
     ...(payload.authorize ? { authorize: payload.authorize } : {}),
     ...(payload.persistent === true ? { persistent: true } : {}),

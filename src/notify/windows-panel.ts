@@ -16,6 +16,15 @@ export const WINDOWS_PANEL_STARTUP_MS = 8_000;
  * ce temps. PowerShell et WPF démarrent en une à deux secondes.
  */
 export const WINDOWS_PANEL_CONFIRM_MS = 5_000;
+
+/**
+ * Temps laissé pour lire la confirmation, une fois la décision rendue.
+ *
+ * Assez pour parcourir une phrase, trop court pour devenir un écriteau à ranger.
+ * Le panneau attend tant que la décision est en suspens ; dès qu'elle est prise,
+ * il n'a plus de raison d'occuper l'écran.
+ */
+export const PANEL_CONFIRMATION_MS = 6_000;
 const WINDOWS_PANEL_BROKER_MS = 3_000;
 export const WINDOWS_PANEL_WIDTH = 412;
 /**
@@ -254,8 +263,13 @@ export function windowsPanelScript(notification: NativeNotification): string {
     "    $status=$window.FindName('PanelStatusText')",
     "    $status.Text=$(if($ok){$payload.authorize.confirmation}else{$payload.authorize.failure})",
     "    $decision.Visibility=[Windows.Visibility]::Collapsed",
-    // L'utilisateur doit voir que son geste a porté : la fenêtre reste, et cesse
-    // seulement de réclamer une décision déjà rendue.
+    // La confirmation doit être lue, pas seulement affichée : la fenêtre reste
+    // le temps de la parcourir, puis s'efface. La laisser indéfiniment ferait
+    // d'une décision rendue un écriteau de plus à ranger à la main.
+    "    $after=New-Object Windows.Threading.DispatcherTimer",
+    `    $after.Interval=[TimeSpan]::FromMilliseconds(${PANEL_CONFIRMATION_MS})`,
+    "    $after.Add_Tick({$after.Stop();$window.Close()}.GetNewClosure())",
+    "    $after.Start()",
     "  }.GetNewClosure())",
     "}",
     "$close.Add_Click({$window.Close()})",
