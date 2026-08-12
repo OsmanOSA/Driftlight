@@ -1,11 +1,21 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import type { NativeNotification } from "./backend.js";
 
 export const WINDOWS_PANEL_STARTUP_MS = 8_000;
+
+/**
+ * Attente d'une confirmation d'affichage lorsque le panneau passe en premier.
+ *
+ * Plus court que le budget d'aperçu : au-delà, l'utilisateur attendrait cette
+ * durée-là **avant** que le toast de repli ne parte, et une alerte rouge n'a pas
+ * ce temps. PowerShell et WPF démarrent en une à deux secondes.
+ */
+export const WINDOWS_PANEL_CONFIRM_MS = 5_000;
 const WINDOWS_PANEL_BROKER_MS = 3_000;
 export const WINDOWS_PANEL_WIDTH = 412;
 /**
@@ -135,10 +145,12 @@ export function windowsPanelPayload(notification: NativeNotification): WindowsPa
   const separator = notification.title.lastIndexOf(" — ");
   const context = separator >= 0 ? notification.title.slice(0, separator) : "DriftLight";
   const verdict = capitalise(separator >= 0 ? notification.title.slice(separator + 3) : notification.title);
-  // L'icône porte le niveau de façon fiable ; le verdict n'est qu'un secours
-  // pour les notifications construites sans elle.
-  const red = /(?:red|rouge)/i.test(path.basename(notification.icon ?? ""))
-    || /(?:bloquée|rouge|refusée)/i.test(verdict);
+  // La gravité est portée explicitement ; l'icône et le verdict ne servent que
+  // de secours aux notifications construites sans elle.
+  const red = notification.level !== undefined
+    ? notification.level === "RED"
+    : /(?:red|rouge)/i.test(path.basename(notification.icon ?? ""))
+      || /(?:bloquée|rouge|refusée)/i.test(verdict);
   const readyFile = safePanelReadyFile(notification.readyFile);
   const content = notification.detail
     ? { ...notification.detail, headline: capitalise(notification.detail.headline) }
@@ -284,6 +296,47 @@ async function launchPanel(script: string): Promise<boolean> {
   return true;
 }
 
-export async function showWindowsPanel(notification: NativeNotification): Promise<boolean> {
-  return await launchPanel(windowsPanelScript(notification));
+/**
+ * Affiche le panneau, et — si on le lui demande — attend qu'il le confirme.
+ *
+ * Le lancement passe par Explorer pour survivre au hook, ce qui a un prix :
+ * un lancement réussi ne prouve pas qu'une fenêtre soit apparue. Le panneau
+ * écrit donc un accusé au premier rendu. Sans cette attente, un panneau mort-né
+ * ferait croire l'alerte remise alors que rien ne s'est affiché, et c'est la
+ * seule panne qu'un voyant n'a pas le droit d'avoir.
+ *
+ * `confirmMs` à zéro conserve l'ancien comportement : on rend la main dès le
+ * lancement, ce qui suffit quand le panneau n'est qu'un repli de dernier rang.
+ */
+export async function showWindowsPanel(
+  notification: NativeNotification,
+  confirmMs = 0,
+): Promise<boolean> {
+  const supplied = safePanelReadyFile(notification.readyFile);
+  const own = confirmMs > 0 && supplied === undefined
+    ? path.join(os.tmpdir(), `driftlight-panel-ready-${process.pid}-${randomUUID()}`)
+    : undefined;
+  const acknowledgement = supplied ?? own;
+  const launched = await launchPanel(windowsPanelScript(
+    own ? { ...notification, readyFile: own } : notification,
+  ));
+  if (!launched || confirmMs <= 0 || acknowledgement === undefined) return launched;
+  try {
+    const deadline = Date.now() + confirmMs;
+    while (Date.now() < deadline) {
+      if (existsSync(acknowledgement)) return true;
+      await delay(60);
+    }
+    return false;
+  } finally {
+    // Seul l'accusé que nous avons créé nous revient : celui de l'appelant lui
+    // appartient, et il l'attend peut-être encore.
+    if (own !== undefined) {
+      try {
+        unlinkSync(own);
+      } catch {
+        // Jamais écrit : le panneau n'a pas démarré, ce que l'attente a déjà dit.
+      }
+    }
+  }
 }

@@ -75,6 +75,7 @@ export function buildNotification(
     title: notificationTitle(root, event, resolved),
     message: notificationMessage(root, event, intent),
     detail: notificationDetail(root, event, intent, resolved),
+    level: event.level,
     sound: config.notificationSound,
     ...(icon ? { icon } : {}),
   };

@@ -445,6 +445,7 @@ async function runNotify(args: string[]): Promise<void> {
         action: "Refusez maintenant : ce contenu n'existe nulle part ailleurs.",
         status: level === "RED" ? "Action refusée — l'agent ne l'exécutera pas" : "Confirmation demandée dans l'agent",
       },
+      level,
       sound: true,
       persistent: true,
       attribution: "DriftLight — voyant local de dérive",

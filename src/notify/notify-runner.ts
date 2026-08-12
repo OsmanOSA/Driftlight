@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import type { NativeNotification } from "./backend.js";
+import { notificationFromPayload } from "./backend.js";
 import { dismissWindowsToasts, showWindowsToast } from "./windows-toast.js";
 
 /**
@@ -35,17 +36,7 @@ async function main(): Promise<void> {
   const raw = process.argv[2];
   if (!raw) return;
 
-  const payload = JSON.parse(raw) as {
-    title?: string;
-    message?: string;
-    sound?: boolean;
-    icon?: string;
-    persistent?: boolean;
-    attribution?: string;
-    tag?: string;
-    readyFile?: string;
-    dismiss?: string[];
-  };
+  const payload = JSON.parse(raw) as Partial<NativeNotification> & { dismiss?: string[] };
 
   if (Array.isArray(payload.dismiss)) {
     if (process.platform === "win32") {
@@ -61,16 +52,7 @@ async function main(): Promise<void> {
     }
     return;
   }
-  const notification = {
-    title: payload.title ?? "DriftLight",
-    message: payload.message ?? "",
-    sound: payload.sound ?? true,
-    ...(payload.persistent === true ? { persistent: true } : {}),
-    ...(payload.attribution ? { attribution: payload.attribution } : {}),
-    ...(payload.tag ? { tag: payload.tag } : {}),
-    ...(payload.readyFile ? { readyFile: payload.readyFile } : {}),
-    ...(payload.icon !== undefined && existsSync(payload.icon) ? { icon: payload.icon } : {}),
-  };
+  const notification = notificationFromPayload(payload);
   if (process.platform === "win32") {
     await showWindowsToast(notification);
     return;

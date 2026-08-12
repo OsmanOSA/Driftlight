@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Severity } from "../domain/types.js";
 import type { NotificationDetail } from "./message.js";
 
 /**
@@ -24,6 +26,11 @@ export interface NativeNotification {
   sound: boolean;
   /** Pastille de sévérité. Facultative : voir notify/icons.ts. */
   icon?: string;
+  /**
+   * Gravité de l'alerte. Elle choisit la surface d'affichage sous Windows, et
+   * évite d'avoir à la déduire du nom d'un fichier d'icône ou d'un titre.
+   */
+  level?: Severity;
   /**
    * Maintient la notification à l'écran jusqu'à ce que l'utilisateur l'écarte.
    * Réservé aux alertes qui retiennent une action : disparaître pendant qu'on
@@ -69,6 +76,31 @@ function isBackendInstalled(): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Relecture d'une notification remise au processus d'affichage.
+ *
+ * Elle vit à côté de son envoi, et non dans le lanceur : recopier champ par
+ * champ à distance de la structure d'origine en fait oublier, et un champ
+ * oublié ne casse rien de visible — il dégrade l'affichage en silence. La
+ * notification arrive quand même, simplement moins bien.
+ */
+export function notificationFromPayload(payload: Partial<NativeNotification>): NativeNotification {
+  return {
+    title: payload.title ?? "DriftLight",
+    message: payload.message ?? "",
+    sound: payload.sound ?? true,
+    ...(payload.level ? { level: payload.level } : {}),
+    ...(payload.detail ? { detail: payload.detail } : {}),
+    ...(payload.persistent === true ? { persistent: true } : {}),
+    ...(payload.attribution ? { attribution: payload.attribution } : {}),
+    ...(payload.tag ? { tag: payload.tag } : {}),
+    ...(payload.readyFile ? { readyFile: payload.readyFile } : {}),
+    // Seule vérification qui doit rester tardive : SnoreToast n'affiche rien du
+    // tout si l'icône a disparu entre l'envoi et l'affichage.
+    ...(payload.icon !== undefined && existsSync(payload.icon) ? { icon: payload.icon } : {}),
+  };
 }
 
 function runnerPath(): string {

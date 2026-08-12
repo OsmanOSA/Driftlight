@@ -7,6 +7,7 @@ import { DEFAULT_CONFIG } from "../src/config/config.js";
 import { writeCurrentIntent } from "../src/intent/current-intent.js";
 import type { DriftLightConfig, SessionEvent, Severity } from "../src/domain/types.js";
 import type { BackendLoader, NativeNotification, NotifierBackend } from "../src/notify/backend.js";
+import { notificationFromPayload } from "../src/notify/backend.js";
 import {
   buildNotification,
   dismissPendingNotifications,
@@ -35,7 +36,9 @@ import {
 } from "../src/notify/windows-toast.js";
 import {
   panelEventName,
+  WINDOWS_PANEL_CONFIRM_MS,
   WINDOWS_PANEL_MAX_HEIGHT,
+  WINDOWS_PANEL_STARTUP_MS,
   WINDOWS_PANEL_WIDTH,
   windowsPanelPayload,
   windowsPanelScript,
@@ -105,6 +108,40 @@ async function temporaryRoot(context: test.TestContext): Promise<string> {
 const config = (overrides: Partial<DriftLightConfig> = {}): DriftLightConfig => ({
   ...DEFAULT_CONFIG,
   ...overrides,
+});
+
+/**
+ * Sous Windows, la gravité choisit la surface : le panneau dense pour le rouge,
+ * le toast persistant pour le reste. Transportée nulle part, chaque alerte
+ * retomberait silencieusement sur le toast — une perte invisible à l'œil, car
+ * la notification arriverait quand même.
+ */
+test("the alert carries its severity so the display surface can be chosen", () => {
+  assert.equal(buildNotification("/repo", event("e1", "RED"), config(), "asked").level, "RED");
+  assert.equal(buildNotification("/repo", event("e2", "ORANGE"), config(), "recorded").level, "ORANGE");
+
+  // Le repli n'a lieu qu'après cette attente : au-delà, une alerte rouge
+  // resterait invisible pendant ce temps-là parce que le panneau est mort-né.
+  assert.ok(WINDOWS_PANEL_CONFIRM_MS <= 5_000);
+  assert.ok(WINDOWS_PANEL_CONFIRM_MS < WINDOWS_PANEL_STARTUP_MS, "plus court que le budget d'aperçu");
+});
+
+/**
+ * La notification traverse un processus détaché, sérialisée en JSON puis
+ * reconstruite. Un champ oublié à la relecture ne casse rien de visible :
+ * l'alerte arrive quand même, simplement amputée de ce qui la rendait juste.
+ * C'est exactement ainsi que le niveau et la description structurée se sont
+ * perdus en route la première fois.
+ */
+test("no field of a notification is dropped on the detached hand-off", () => {
+  const built = buildNotification("/repo", event("e1", "RED"), config(), "denied");
+  const revived = notificationFromPayload(JSON.parse(JSON.stringify(built)) as NativeNotification);
+
+  for (const field of Object.keys(built) as (keyof NativeNotification)[]) {
+    // L'icône est la seule à être revérifiée sur disque au dernier moment.
+    if (field === "icon") continue;
+    assert.deepEqual(revived[field], built[field], `champ perdu à la remise : ${field}`);
+  }
 });
 
 // --- Libellé dérivé de l'issue réelle du hook ---------------------------------

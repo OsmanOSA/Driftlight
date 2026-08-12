@@ -4,7 +4,12 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { NativeNotification } from "./backend.js";
-import { panelEventName, safePanelReadyFile, showWindowsPanel } from "./windows-panel.js";
+import {
+  panelEventName,
+  safePanelReadyFile,
+  showWindowsPanel,
+  WINDOWS_PANEL_CONFIRM_MS,
+} from "./windows-panel.js";
 
 const require = createRequire(import.meta.url);
 
@@ -251,10 +256,22 @@ async function showRichToast(notification: NativeNotification): Promise<boolean>
  * uniquement son processus après que Windows a enregistré le toast.
  */
 export async function showWindowsToast(notification: NativeNotification): Promise<void> {
-  // Le toast natif est la petite carte de notification de Windows. Pour une
-  // alerte persistante, son scénario `reminder` reste affiché indépendamment
-  // du processus qui l'a créé. Le panneau WPF ne sert plus que de repli : son
-  // lancement caché est plus fragile et ne doit pas remplacer un toast valide.
+  // Deux surfaces, deux faiblesses opposées, et le niveau tranche entre elles.
+  //
+  // Windows plafonne un toast à quatre éléments de texte : il ne peut pas porter
+  // à la fois ce qui se passe, sur quoi, ce qui avait été demandé et ce que le
+  // hook a obtenu. Le panneau le peut, mais c'est une fenêtre vivante — elle ne
+  // survit ni à une veille ni à la mort de son processus, et ne laisse rien au
+  // centre de notifications.
+  //
+  // Une alerte rouge retient une décision et se prend au clavier, tout de suite :
+  // elle a besoin de tout dire. Une orange informe et peut attendre d'être
+  // relue plus tard : elle a besoin de durer. Le panneau doit toutefois prouver
+  // qu'il s'est affiché, faute de quoi on revient au toast — perdre la densité
+  // est acceptable, perdre l'alerte ne l'est pas.
+  if (notification.level === "RED" && await showWindowsPanel(notification, WINDOWS_PANEL_CONFIRM_MS)) {
+    return;
+  }
   if (await showRichToast(notification)) {
     const readyFile = safePanelReadyFile(notification.readyFile);
     if (readyFile) writeFileSync(readyFile, "ready", { encoding: "utf8", mode: 0o600 });
