@@ -76,8 +76,14 @@ export function evaluateExemptions(
   }
 
   // 3. Ignoré par Git, sauf lorsqu'un motif de secret correspond.
+  //
+  // Cette exemption vaut même pour une destruction : un journal ou un artefact
+  // de compilation est réécrit intégralement à chaque exécution, et le veto
+  // général transformait ce geste banal en alerte. Le carve-out sur les secrets
+  // demeure — .env est gitignoré dans presque tous les projets, et c'est
+  // précisément ce que DriftLight doit continuer de protéger.
   const ignoredBy = gitignoreSource(input.root, context.profile, filePath);
-  if (implicitVetoAllowed && ignoredBy) {
+  if (!secret && !dependencyAdded && ignoredBy) {
     return { id: "git-ignored", reason: `Fichier ignoré par Git (${ignoredBy}) et sans motif de secret.` };
   }
 

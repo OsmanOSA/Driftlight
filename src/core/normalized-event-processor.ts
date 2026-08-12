@@ -152,10 +152,16 @@ export class NormalizedEventProcessor {
     const command = string(event.payload.command);
     if (command === undefined) return;
     const { store, session } = await this.context(event);
-    const findings = classifyCommand(command, session.baseline);
+    const intent = readCurrentIntentSync(session.cwd, session.id);
+    // Même règle que côté Claude Code : ce qui vient d'être demandé n'alerte pas.
+    const findings = classifyCommand(
+      command,
+      session.baseline,
+      undefined,
+      intent ? { text: intent.text, scopeAdditions: intent.scopeAdditions } : undefined,
+    );
     if (findings.length === 0) return;
     const candidate = eventFromFindings("proposed-action", findings, session.cwd, command.slice(0, 160));
-    const intent = readCurrentIntentSync(session.cwd, session.id);
     if (intent) {
       candidate.intentVersion = intent.version;
       candidate.turnId = intent.turnId;

@@ -221,10 +221,18 @@ export async function handleClaudeHook(input: ClaudeHookInput): Promise<ClaudeHo
     }
     const command = input.tool_input?.command;
     if ((input.tool_name === "Bash" || input.tool_name === "PowerShell") && typeof command === "string") {
-      const findings = classifyCommand(command, session.baseline);
+      // L'intention entre dans la classification des commandes : supprimer ce
+      // que l'utilisateur vient de demander ne doit pas produire d'alerte.
+      const currentIntent = readCurrentIntentSync(session.cwd, session.id);
+      const findings = classifyCommand(
+        command,
+        session.baseline,
+        undefined,
+        currentIntent ? { text: currentIntent.text, scopeAdditions: currentIntent.scopeAdditions } : undefined,
+      );
       if (findings.length > 0) {
         const event = eventFromFindings("proposed-action", findings, session.cwd, command.slice(0, 160));
-        const intent = readCurrentIntentSync(session.cwd, session.id);
+        const intent = currentIntent;
         if (intent) {
           event.intentVersion = intent.version;
           event.turnId = intent.turnId;

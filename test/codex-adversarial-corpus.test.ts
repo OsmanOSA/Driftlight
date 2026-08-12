@@ -97,10 +97,17 @@ async function applyCodexStep(root: string, step: Step): Promise<void> {
     });
     return;
   }
+  // Une édition porte souvent sur plusieurs lignes : préfixer seulement la
+  // première produirait un patch dont le corps ment sur son ampleur, et le
+  // corpus mesurerait alors ma traduction plutôt que le produit.
+  const prefix = (text: string, sign: "-" | "+"): string =>
+    text.split("\n").map((line) => `${sign}${line}`).join("\n");
   await deliver(root, {
     hook_event_name: "PreToolUse",
     tool_name: "apply_patch",
-    tool_input: { command: applyPatch(step.edit, "Update", `-${step.from}\n+${step.to}`) },
+    tool_input: {
+      command: applyPatch(step.edit, "Update", `${prefix(step.from, "-")}\n${prefix(step.to, "+")}`),
+    },
   });
 }
 
