@@ -42,10 +42,30 @@ export interface ClaudeHookOutput {
   terminalSequence?: string;
   hookSpecificOutput?: {
     hookEventName: "PreToolUse";
-    permissionDecision: "ask";
+    /**
+     * `ask` remet la décision à l'utilisateur — mais l'agent hôte peut la
+     * court-circuiter selon son mode de permission, et l'action se déroule alors
+     * malgré l'alerte. `deny` refuse l'appel sans recours possible.
+     */
+    permissionDecision: "ask" | "deny";
     permissionDecisionReason: string;
     additionalContext: string;
   };
+}
+
+/**
+ * Destruction que rien ne pourra défaire.
+ *
+ * L'étage 0 ne se déclenche qu'après avoir constaté, dans la baseline Git, des
+ * modifications non sauvegardées sur le fichier visé : ni Git ni l'agent ne
+ * sauront les restaurer. Une commande Git destructrice rejoint cette catégorie
+ * uniquement s'il existe effectivement du travail préexistant à emporter — sans
+ * quoi `git reset --hard` est sans conséquence et un refus ferme serait un
+ * obstacle gratuit.
+ */
+function destroysUnrecoverableWork(event: SessionEvent, session: SessionRecord): boolean {
+  if (event.stage === "absolute") return true;
+  return event.ruleId === "destructive-git-command" && session.baseline.files.length > 0;
 }
 
 async function sessionContext(input: ClaudeHookInput): Promise<{
@@ -71,15 +91,19 @@ function absoluteToolPath(root: string, filePath: string): string {
  *
  * `blockedEventIds` porte l'issue réelle du hook : seuls ces événements ont
  * effectivement suspendu l'action, et eux seuls seront annoncés comme bloqués.
+ * `deniedEventIds` distingue le refus ferme de la simple demande, parce que les
+ * deux n'engagent pas la même promesse envers l'utilisateur.
  */
 async function signalEvents(
   session: SessionRecord,
   events: SessionEvent[],
   blockedEventIds: readonly string[] = [],
+  deniedEventIds: readonly string[] = [],
 ): Promise<void> {
   try {
     await dispatchNotifications(session.cwd, events, loadConfigSync(session.cwd), session.id, {
       blockedEventIds,
+      deniedEventIds,
     });
   } catch {
     // Couche de signalement optionnelle : on n'interrompt pas le hook.
@@ -248,7 +272,20 @@ export async function handleClaudeHook(input: ClaudeHookInput): Promise<ClaudeHo
     const blockingEvent = acceptedEvents.find((event) => event.level === "RED" && config.blockOnRed)
       ?? acceptedEvents.find((event) => event.level === "ORANGE" && config.blockOnOrange);
 
-    await signalEvents(session, acceptedEvents, blockingEvent ? [blockingEvent.id] : []);
+    // Un refus ferme n'est pas une demande plus insistante : il ne laisse aucune
+    // issue à l'agent. Il est réservé aux cas où se tromper coûte moins cher
+    // qu'une perte définitive, ou à une décision explicite de l'utilisateur.
+    const denied = blockingEvent !== undefined && blockingEvent.level === "RED" && (
+      config.enforceRed === "always"
+      || (config.enforceRed === "irreversible" && destroysUnrecoverableWork(blockingEvent, session))
+    );
+
+    await signalEvents(
+      session,
+      acceptedEvents,
+      blockingEvent ? [blockingEvent.id] : [],
+      denied && blockingEvent ? [blockingEvent.id] : [],
+    );
     const title = titleOutput(session.cwd);
 
     if (!blockingEvent) return title;
@@ -260,9 +297,15 @@ export async function handleClaudeHook(input: ClaudeHookInput): Promise<ClaudeHo
       suppressOutput: true,
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
-        permissionDecision: "ask",
+        permissionDecision: denied ? "deny" : "ask",
         permissionDecisionReason: message,
-        additionalContext: `${message}. Attends la confirmation explicite de l'utilisateur avant de poursuivre cette action.`,
+        additionalContext: denied
+          // Refuser sans dire comment procéder légitimement transformerait la
+          // protection en impasse : l'agent doit savoir qu'une voie existe.
+          ? `${message}. Action refusée par DriftLight. N'insiste pas et ne contourne pas :`
+            + " demande à l'utilisateur de confirmer explicitement, ou de l'autoriser via"
+            + " `driftlight add-scope \"<chemin ou instruction>\"`."
+          : `${message}. Attends la confirmation explicite de l'utilisateur avant de poursuivre cette action.`,
       },
     };
   }

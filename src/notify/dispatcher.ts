@@ -2,7 +2,7 @@ import type { CurrentIntentState, DriftLightConfig, SessionEvent, Severity } fro
 import { readOwnCurrentIntentSync } from "../intent/current-intent.js";
 import { loadNativeBackend, type BackendLoader, type NativeNotification, type NotifierBackend } from "./backend.js";
 import { severityIconPath } from "./icons.js";
-import { notificationMessage, notificationTitle } from "./message.js";
+import { notificationMessage, notificationTitle, type HookOutcome } from "./message.js";
 import { NotificationLedger, type ReservationOutcome } from "./notified-log.js";
 
 export type NotificationOutcome =
@@ -23,8 +23,10 @@ export interface NotificationDecision {
 export interface DispatchOptions {
   loadBackend?: BackendLoader;
   ledger?: NotificationLedger;
-  /** Identifiants des événements pour lesquels le hook a réellement renvoyé un refus. */
+  /** Identifiants des événements pour lesquels le hook a réellement retenu l'action. */
   blockedEventIds?: readonly string[];
+  /** Sous-ensemble refusé fermement, que l'agent hôte ne peut pas contourner. */
+  deniedEventIds?: readonly string[];
   environment?: NodeJS.ProcessEnv;
 }
 
@@ -57,12 +59,15 @@ export function buildNotification(
   root: string,
   event: SessionEvent,
   config: DriftLightConfig,
-  blocked: boolean,
+  outcome: HookOutcome | boolean,
   intent: CurrentIntentState | null = null,
 ): NativeNotification {
   const icon = severityIconPath(event.level);
+  const resolved: HookOutcome = typeof outcome === "boolean"
+    ? outcome ? "asked" : "recorded"
+    : outcome;
   return {
-    title: notificationTitle(root, event, blocked),
+    title: notificationTitle(root, event, resolved),
     message: notificationMessage(root, event, intent),
     sound: config.notificationSound,
     ...(icon ? { icon } : {}),
@@ -100,6 +105,9 @@ export async function dispatchNotifications(
 
     const ledger = options.ledger ?? new NotificationLedger(root);
     const blocked = new Set(options.blockedEventIds ?? []);
+    const refused = new Set(options.deniedEventIds ?? []);
+    const outcomeFor = (event: SessionEvent): HookOutcome =>
+      refused.has(event.id) ? "denied" : blocked.has(event.id) ? "asked" : "recorded";
     const pending: SessionEvent[] = [];
 
     for (const event of events) {
@@ -148,7 +156,7 @@ export async function dispatchNotifications(
         continue;
       }
       try {
-        await backend.send(buildNotification(root, event, config, blocked.has(event.id), intent));
+        await backend.send(buildNotification(root, event, config, outcomeFor(event), intent));
         decisions.push({ eventId: event.id, level: event.level, outcome: "sent" });
       } catch {
         decisions.push({ eventId: event.id, level: event.level, outcome: "backend-unavailable" });

@@ -184,6 +184,104 @@ test("blocking behavior follows local blockOnRed and blockOnOrange settings", as
   assert.match(orange?.hookSpecificOutput?.permissionDecisionReason ?? "", /destructive-edit/);
 });
 
+/**
+ * Constaté en usage réel : une notification rouge annonçait un blocage pendant
+ * que la commande s'exécutait. `ask` remet la décision à l'agent hôte, qui peut
+ * la court-circuiter selon son mode de permission. Seul `deny` tient debout.
+ *
+ * Le refus ferme reste réservé à ce que rien ne pourra restaurer : se tromper y
+ * coûte une friction, laisser passer y coûte le travail de l'utilisateur.
+ */
+test("destroying unsaved work is refused outright, not merely questioned", async (context) => {
+  const root = await setupPreexistingWork(context);
+  await handleClaudeHook(hook(root, "UserPromptSubmit", {
+    prompt: "Mets à jour README.md",
+    prompt_id: "turn-enforce",
+  }));
+
+  const output = await handleClaudeHook(hook(root, "PreToolUse", {
+    tool_name: "Write",
+    tool_input: { file_path: path.join(root, "protected.txt"), content: "écrasé\n" },
+  }));
+
+  assert.equal(
+    output?.hookSpecificOutput?.permissionDecision,
+    "deny",
+    "un mode de permission permissif ne doit pas pouvoir laisser passer ceci",
+  );
+  assert.match(output?.hookSpecificOutput?.permissionDecisionReason ?? "", /preexisting-file-rewritten/);
+  assert.match(
+    output?.hookSpecificOutput?.additionalContext ?? "",
+    /add-scope/,
+    "refuser sans indiquer la voie légitime transformerait la protection en impasse",
+  );
+});
+
+test("a red verdict on recoverable work still only asks", async (context) => {
+  const root = await setup(context);
+  await handleClaudeHook(hook(root, "UserPromptSubmit", {
+    prompt: "Fix src/anchor.ts",
+    prompt_id: "turn-recoverable",
+  }));
+
+  const output = await handleClaudeHook(hook(root, "PreToolUse", {
+    tool_name: "Write",
+    tool_input: { file_path: path.join(root, ".env"), content: "SECRET=1\n" },
+  }));
+
+  assert.equal(
+    output?.hookSpecificOutput?.permissionDecision,
+    "ask",
+    "par défaut DriftLight demande ; il ne refuse que l'irréversible",
+  );
+});
+
+test("enforceRed settings move the line in both directions", async (context) => {
+  const root = await setup(context);
+  await fs.mkdir(path.join(root, ".driftlight"), { recursive: true });
+  const configure = async (enforceRed: string): Promise<void> => {
+    await fs.writeFile(path.join(root, ".driftlight", "config.json"), JSON.stringify({ enforceRed }));
+  };
+  const writeSecret = async (): Promise<Awaited<ReturnType<typeof handleClaudeHook>>> => {
+    await handleClaudeHook(hook(root, "UserPromptSubmit", {
+      prompt: "Fix src/anchor.ts",
+      prompt_id: `turn-${enforcement}`,
+    }));
+    return await handleClaudeHook(hook(root, "PreToolUse", {
+      tool_name: "Write",
+      tool_input: { file_path: path.join(root, ".env"), content: `SECRET=${enforcement}\n` },
+    }));
+  };
+
+  let enforcement = "always";
+  await configure(enforcement);
+  assert.equal((await writeSecret())?.hookSpecificOutput?.permissionDecision, "deny");
+
+  enforcement = "never";
+  await configure(enforcement);
+  assert.equal((await writeSecret())?.hookSpecificOutput?.permissionDecision, "ask");
+});
+
+/**
+ * `never` ne doit désarmer que la fermeté du refus, jamais la protection
+ * elle-même : l'action reste retenue, seule la manière change.
+ */
+test("enforceRed never still holds destruction of unsaved work", async (context) => {
+  const root = await setupPreexistingWork(context);
+  await fs.mkdir(path.join(root, ".driftlight"), { recursive: true });
+  await fs.writeFile(path.join(root, ".driftlight", "config.json"), JSON.stringify({ enforceRed: "never" }));
+  await handleClaudeHook(hook(root, "UserPromptSubmit", {
+    prompt: "Mets à jour README.md",
+    prompt_id: "turn-never",
+  }));
+
+  const output = await handleClaudeHook(hook(root, "PreToolUse", {
+    tool_name: "Write",
+    tool_input: { file_path: path.join(root, "protected.txt"), content: "écrasé\n" },
+  }));
+  assert.equal(output?.hookSpecificOutput?.permissionDecision, "ask");
+});
+
 test("an explicitly named file is never signaled, including a sensitive path", async (context) => {
   const root = await setup(context);
   await handleClaudeHook(hook(root, "UserPromptSubmit", {
@@ -424,7 +522,8 @@ test("rewriting an unread out-of-scope pre-existing file is absolute red", async
     tool_name: "Write",
     tool_input: { file_path: path.join(root, "protected.txt"), content: "replacement\n" },
   }));
-  assert.equal(output?.hookSpecificOutput?.permissionDecision, "ask");
+  // L'étage 0 refuse fermement depuis que `ask` s'est révélé contournable.
+  assert.equal(output?.hookSpecificOutput?.permissionDecision, "deny");
 
   const session = await new SessionStore(root).load("claude-integration-hook");
   const alert = session?.events.find((event) => event.path === "protected.txt" && event.ruleId === "preexisting-file-rewritten");

@@ -128,6 +128,7 @@ sans empêcher un projet de diverger :
 {
   "blockOnRed": true,
   "blockOnOrange": false,
+  "enforceRed": "irreversible",
   "largeLineDeletionThreshold": 50,
   "notifyOnRed": true,
   "notifyOnOrange": false,
@@ -141,6 +142,19 @@ sans empêcher un projet de diverger :
 | --- | --- | --- |
 | `blockOnRed` | `true` | Le rouge passe par le dialogue de confirmation de Claude Code. |
 | `blockOnOrange` | `false` | S'il est activé, l'orange déclenche lui aussi la confirmation. |
+| `enforceRed` | `"irreversible"` | Force du blocage. Voir ci-dessous. |
+
+### Demander ou refuser
+
+Une demande de confirmation (`ask`) remet la décision à l'agent hôte, qui peut la court-circuiter selon son mode de permission : l'alerte rouge s'affiche pendant que l'action se déroule quand même. Un refus (`deny`) ne se contourne pas.
+
+| `enforceRed` | Comportement |
+| --- | --- |
+| `"never"` | Toujours demander. L'action reste retenue, mais l'hôte peut passer outre. |
+| `"irreversible"` *(défaut)* | Refuser ce que rien ne pourra restaurer — destruction de travail non commité — et demander pour le reste. |
+| `"always"` | Refuser tout rouge. Le plus sûr, et le plus sensible aux faux positifs. |
+
+Le défaut trace la ligne là où se tromper coûte moins cher que laisser passer : un refus injustifié coûte une friction, un fichier non commité écrasé ne revient jamais. Un refus indique toujours à l'agent la voie légitime — `driftlight add-scope` — pour qu'une protection ne devienne pas une impasse.
 | `largeLineDeletionThreshold` | `50` | Lignes supprimées nettes à partir desquelles l'édition est jugée destructive. |
 | `notifyOnRed` | `true` | Notification système sur rouge. |
 | `notifyOnOrange` | `false` | Notification système sur orange. |

@@ -266,9 +266,26 @@ export interface ImportGraph {
   unresolvedImports: Record<string, string[]>;
 }
 
+/**
+ * Force du blocage sur un verdict rouge.
+ *
+ * `blockOnRed` fait renvoyer une demande de confirmation, que l'agent hôte peut
+ * court-circuiter selon son mode de permission : l'utilisateur voit alors une
+ * alerte rouge pendant que l'action se déroule quand même. `enforceRed` décide
+ * si DriftLight passe au refus ferme, que rien ne contourne.
+ *
+ * - `never` : toujours demander, jamais refuser.
+ * - `irreversible` : refuser ce que rien ne pourra restaurer — la destruction de
+ *   travail non commité — et demander pour le reste. C'est le seul cas où une
+ *   erreur de DriftLight coûte moins cher qu'une perte définitive.
+ * - `always` : refuser tout rouge. Le plus sûr, le plus friand de faux positifs.
+ */
+export type RedEnforcement = "never" | "irreversible" | "always";
+
 export interface DriftLightConfig {
   blockOnRed: boolean;
   blockOnOrange: boolean;
+  enforceRed: RedEnforcement;
   largeLineDeletionThreshold: number;
   notifyOnRed: boolean;
   notifyOnOrange: boolean;

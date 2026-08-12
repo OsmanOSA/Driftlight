@@ -111,6 +111,28 @@ test("the notification title states what actually happened, not the severity", (
 });
 
 /**
+ * Refus ferme et demande de confirmation n'engagent pas la même promesse :
+ * l'un ne se contourne pas, l'autre dépend du mode de permission de l'hôte.
+ * Les confondre, c'est promettre une sécurité qu'on ne contrôle pas.
+ */
+test("a firm refusal and a confirmation request are never announced alike", async (context) => {
+  const root = await temporaryRoot(context);
+  const notifier = fakeNotifier();
+  const refused = event("e-denied", "RED", { path: "src/perdu.ts" });
+  const asked = event("e-asked", "RED", { path: "src/demande.ts" });
+
+  await dispatchNotifications(root, [refused, asked], config(), SESSION, {
+    loadBackend: notifier.loader,
+    blockedEventIds: [refused.id, asked.id],
+    deniedEventIds: [refused.id],
+    environment: NEUTRAL_ENV,
+  });
+
+  assert.match(notifier.sent[0]?.title ?? "", /action refusée$/);
+  assert.match(notifier.sent[1]?.title ?? "", /confirmation demandée$/);
+});
+
+/**
  * L'installation est désormais valable pour toute la machine : une alerte qui
  * ne nomme pas son dépôt oblige à deviner lequel des projets ouverts a bougé.
  */

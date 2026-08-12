@@ -123,10 +123,15 @@ export interface NotificationCopy {
  * qu'on ne contrôle pas est la pire chose qu'un voyant puisse faire : elle
  * transforme une alerte en fausse sécurité.
  */
-export function notificationTitle(root: string, event: SessionEvent, blocked: boolean): string {
-  const verdict = blocked
-    ? "confirmation demandée"
-    : event.level === "RED" ? "alerte rouge" : "à vérifier";
+export type HookOutcome = "denied" | "asked" | "recorded";
+
+export function notificationTitle(root: string, event: SessionEvent, outcome: HookOutcome): string {
+  const verdict = outcome === "denied"
+    // Seul cas où une promesse d'arrêt est tenable : `deny` ne se contourne pas.
+    ? "action refusée"
+    : outcome === "asked"
+      ? "confirmation demandée"
+      : event.level === "RED" ? "alerte rouge" : "à vérifier";
   return `DriftLight · ${projectLabel(root)} — ${verdict}`;
 }
 

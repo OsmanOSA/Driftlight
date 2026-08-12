@@ -2,9 +2,12 @@ import { readFileSync } from "node:fs";
 import type { DriftLightConfig } from "../domain/types.js";
 import { globalConfigPath, projectConfigPath } from "../shared/state-paths.js";
 
+export const ENFORCEMENT_LEVELS = ["never", "irreversible", "always"] as const;
+
 export const DEFAULT_CONFIG: DriftLightConfig = {
   blockOnRed: true,
   blockOnOrange: false,
+  enforceRed: "irreversible",
   largeLineDeletionThreshold: 50,
   notifyOnRed: true,
   notifyOnOrange: false,
@@ -31,6 +34,9 @@ function merge(base: DriftLightConfig, parsed: Partial<DriftLightConfig>): Drift
   return {
     blockOnRed: boolean(parsed.blockOnRed, base.blockOnRed),
     blockOnOrange: boolean(parsed.blockOnOrange, base.blockOnOrange),
+    enforceRed: ENFORCEMENT_LEVELS.includes(parsed.enforceRed as never)
+      ? parsed.enforceRed as DriftLightConfig["enforceRed"]
+      : base.enforceRed,
     largeLineDeletionThreshold: typeof parsed.largeLineDeletionThreshold === "number"
       && Number.isInteger(parsed.largeLineDeletionThreshold)
       && parsed.largeLineDeletionThreshold > 0
