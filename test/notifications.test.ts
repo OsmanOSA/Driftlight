@@ -37,6 +37,7 @@ import {
   windowsToastArguments,
 } from "../src/notify/windows-toast.js";
 import {
+  awaitPanelDecision,
   panelEventName,
   PANEL_CONFIRMATION_MS,
   PANEL_DECISION_MS,
@@ -212,6 +213,21 @@ test("waiting for a human never becomes a way through", () => {
   assert.match(script, /\$answer 'deny'/, "fermer sans répondre est une réponse");
   assert.match(script, /\$answer 'allow'/);
   assert.match(script, /decisionFile.*deny/, "la fermeture de la fenêtre doit écrire un refus");
+});
+
+/**
+ * Un silence n'est pas un refus.
+ *
+ * Les deux retiennent l'action, mais ils ne disent pas la même chose de la
+ * suite. Qui vient de cliquer « Garder le refus » est devant son écran : l'agent
+ * peut poursuivre le reste sous son regard. Personne n'ayant répondu, il n'y a
+ * personne pour regarder — et un agent qui repart seul après avoir été bloqué
+ * est exactement ce que ce projet cherche à empêcher.
+ */
+test("an unanswered panel is told apart from a refusal", async () => {
+  // Sans panneau possible, l'attente ne peut interroger personne : silence.
+  const notification = buildNotification("/repo", event("e1", "RED"), config(), "denied");
+  assert.equal(await awaitPanelDecision(notification, 200), "unanswered");
 });
 
 /**

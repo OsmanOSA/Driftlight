@@ -358,11 +358,12 @@ export async function handleClaudeHook(input: ClaudeHookInput): Promise<ClaudeHo
     const subject = blockingEvent.path ?? blockingEvent.detail ?? "action";
     const reason = blockingEvent.reasons[0] ?? blockingEvent.ruleId;
     const message = `DriftLight ${blockingEvent.level} — ${subject} — ${blockingEvent.ruleId}: ${reason} [${blockingEvent.id}]`;
-    // L'arrêt du tour n'est plus qu'un dernier recours : il n'existe que là où
-    // l'utilisateur n'a pas pu être consulté — hors de Windows, ou notifications
-    // coupées. Refuser sans pouvoir demander laisserait sinon l'agent enchaîner
-    // sur autre chose pendant que l'utilisateur regarde passer des refus.
-    const halt = denied && config.haltOnRefusal && answer === undefined;
+    // L'arrêt du tour ne subsiste que là où personne n'a répondu : utilisateur
+    // absent, panneau impossible à afficher, ou plateforme sans panneau. Un
+    // refus rendu de la main de l'utilisateur ne l'arrête pas — il est devant
+    // l'écran, il vient de trancher, et l'agent peut poursuivre le reste sous
+    // son regard. Un silence, lui, veut dire qu'il n'y a personne pour regarder.
+    const halt = denied && config.haltOnRefusal && answer !== "deny";
     return {
       ...title,
       suppressOutput: true,

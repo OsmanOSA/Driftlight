@@ -157,7 +157,7 @@ export async function askUserDecision(
     }
     return await awaitPanelDecision(buildNotification(root, event, config, "denied", intent));
   } catch {
-    return "deny";
+    return "unanswered";
   }
 }
 

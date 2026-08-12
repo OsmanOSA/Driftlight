@@ -40,7 +40,16 @@ export const PANEL_CONFIRMATION_MS = 6_000;
  */
 export const PANEL_DECISION_MS = 90_000;
 
-export type PanelDecision = "allow" | "deny";
+/**
+ * Trois issues, et non deux.
+ *
+ * `deny` est un refus rendu par quelqu'un : il a vu l'alerte et tranché.
+ * `unanswered` est un silence — personne n'était devant l'écran. Les deux
+ * retiennent l'action, mais ils ne disent pas la même chose de la suite : après
+ * un refus, l'agent peut poursuivre le reste du travail sous le regard de son
+ * utilisateur ; après un silence, il n'y a personne pour le regarder.
+ */
+export type PanelDecision = "allow" | "deny" | "unanswered";
 const WINDOWS_PANEL_BROKER_MS = 3_000;
 export const WINDOWS_PANEL_WIDTH = 412;
 /**
@@ -414,8 +423,10 @@ export async function awaitPanelDecision(
 ): Promise<PanelDecision> {
   const decisionFile = path.join(os.tmpdir(), `driftlight-panel-decision-${process.pid}-${randomUUID()}`);
   try {
+    // Un panneau qui ne s'affiche pas n'a interrogé personne : c'est un silence,
+    // pas un refus, et l'agent ne doit pas repartir comme si on l'avait vu.
     const shown = await showWindowsPanel({ ...notification, decisionFile }, WINDOWS_PANEL_CONFIRM_MS);
-    if (!shown) return "deny";
+    if (!shown) return "unanswered";
     const deadline = Date.now() + budgetMs;
     while (Date.now() < deadline) {
       try {
@@ -426,9 +437,9 @@ export async function awaitPanelDecision(
       }
       await delay(120);
     }
-    return "deny";
+    return "unanswered";
   } catch {
-    return "deny";
+    return "unanswered";
   } finally {
     try {
       unlinkSync(decisionFile);
