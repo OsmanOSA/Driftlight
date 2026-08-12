@@ -27,18 +27,37 @@ export const DRIFTLIGHT_TOAST_APP_ID = "DriftLight.Warning.Light";
 
 const SUCCESS_MARKER = "DRIFTLIGHT_TOAST_OK";
 
-export function toastAppId(environment: NodeJS.ProcessEnv = process.env): string {
-  const override = environment.DRIFTLIGHT_TOAST_APPID;
-  if (override && override.trim().length > 0) return override.trim();
-  return installedShortcutPath() && existsSync(installedShortcutPath())
-    ? DRIFTLIGHT_TOAST_APP_ID
-    : DEFAULT_TOAST_APP_ID;
+/** Regroupe nos notifications pour pouvoir les retirer sans toucher aux autres. */
+export const TOAST_GROUP = "driftlight";
+
+/** Windows plafonne l'étiquette d'une notification à 64 caractères. */
+export function toastTag(eventId: string): string {
+  return eventId.replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 64);
 }
 
 /** Raccourci portant notre identité, s'il a été installé explicitement. */
 export function installedShortcutPath(environment: NodeJS.ProcessEnv = process.env): string {
   const roaming = environment.APPDATA ?? "";
+  if (roaming === "") return "";
   return path.join(roaming, "Microsoft", "Windows", "Start Menu", "Programs", "DriftLight.lnk");
+}
+
+export function ownIdentityInstalled(environment: NodeJS.ProcessEnv = process.env): boolean {
+  const shortcut = installedShortcutPath(environment);
+  return shortcut !== "" && existsSync(shortcut);
+}
+
+/**
+ * Le second paramètre est explicite pour que ce choix reste testable : lié au
+ * disque, il rendait le résultat dépendant de la machine qui exécute la suite.
+ */
+export function toastAppId(
+  environment: NodeJS.ProcessEnv = process.env,
+  installed: boolean = ownIdentityInstalled(environment),
+): string {
+  const override = environment.DRIFTLIGHT_TOAST_APPID;
+  if (override && override.trim().length > 0) return override.trim();
+  return installed ? DRIFTLIGHT_TOAST_APP_ID : DEFAULT_TOAST_APP_ID;
 }
 
 function escapeXml(value: string): string {
@@ -112,7 +131,9 @@ export function windowsToastArguments(notification: NativeNotification): string[
   ];
 }
 
-export function richToastScript(xml: string, appId: string): string {
+const quote = (value: string): string => `'${value.replace(/'/g, "''")}'`;
+
+export function richToastScript(xml: string, appId: string, tag?: string): string {
   const payload = Buffer.from(xml, "utf8").toString("base64");
   return [
     "$ErrorActionPreference='Stop'",
@@ -121,9 +142,66 @@ export function richToastScript(xml: string, appId: string): string {
     "$doc=New-Object Windows.Data.Xml.Dom.XmlDocument",
     `$doc.LoadXml([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}')))`,
     "$toast=New-Object Windows.UI.Notifications.ToastNotification $doc",
-    `[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('${appId.replace(/'/g, "''")}').Show($toast)`,
+    // Étiqueter à l'envoi est la seule façon de retrouver la notification plus
+    // tard : sans tag, une alerte persistante ne peut plus être retirée.
+    ...(tag ? [`$toast.Tag=${quote(tag)}`, `$toast.Group=${quote(TOAST_GROUP)}`] : []),
+    `[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier(${quote(appId)}).Show($toast)`,
     `Write-Output '${SUCCESS_MARKER}'`,
   ].join("\n");
+}
+
+/**
+ * Retire des notifications déjà affichées.
+ *
+ * Une alerte persistante attend une décision. Quand cette décision est prise
+ * ailleurs — l'utilisateur approuve l'action directement dans son agent — la
+ * notification n'attend plus rien et devient un résidu à l'écran. La laisser
+ * apprendrait à l'ignorer, ce qui est exactement ce qu'un voyant ne doit pas
+ * enseigner.
+ */
+export function dismissToastScript(tags: readonly string[], appId: string): string {
+  return [
+    "$ErrorActionPreference='SilentlyContinue'",
+    "[void][Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime]",
+    "$history=[Windows.UI.Notifications.ToastNotificationManager]::History",
+    `foreach($tag in @(${tags.map(quote).join(",")})){`,
+    `  try{ $history.Remove($tag,${quote(TOAST_GROUP)},${quote(appId)}) }catch{}`,
+    "}",
+    `Write-Output '${SUCCESS_MARKER}'`,
+  ].join("\n");
+}
+
+async function runPowerShell(script: string, budgetMs: number): Promise<boolean> {
+  const encoded = Buffer.from(script, "utf16le").toString("base64");
+  return await new Promise<boolean>((resolve) => {
+    let settled = false;
+    let output = "";
+    const finish = (value: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(guard);
+      resolve(value);
+    };
+    const child = spawn(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+      { stdio: ["ignore", "pipe", "ignore"], windowsHide: true },
+    );
+    const guard = setTimeout(() => {
+      child.kill();
+      finish(false);
+    }, budgetMs);
+    child.stdout?.on("data", (chunk: Buffer) => {
+      output += chunk.toString("utf8");
+    });
+    child.once("error", () => finish(false));
+    child.once("exit", (code) => finish(code === 0 && output.includes(SUCCESS_MARKER)));
+  });
+}
+
+export async function dismissWindowsToasts(tags: readonly string[]): Promise<void> {
+  if (tags.length === 0) return;
+  await runPowerShell(dismissToastScript(tags, toastAppId()), WINDOWS_RICH_TOAST_BUDGET_MS);
 }
 
 function snoreToastExecutable(): string {
@@ -145,33 +223,14 @@ async function showRichToast(notification: NativeNotification): Promise<boolean>
   const iconUri = notification.icon !== undefined && existsSync(notification.icon)
     ? pathToFileURL(notification.icon).href
     : undefined;
-  const script = richToastScript(buildToastXml(notification, iconUri), toastAppId());
-  const encoded = Buffer.from(script, "utf16le").toString("base64");
-
-  return await new Promise<boolean>((resolve) => {
-    let settled = false;
-    let output = "";
-    const finish = (value: boolean): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(guard);
-      resolve(value);
-    };
-    const child = spawn(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-      { stdio: ["ignore", "pipe", "ignore"], windowsHide: true },
-    );
-    const guard = setTimeout(() => {
-      child.kill();
-      finish(false);
-    }, WINDOWS_RICH_TOAST_BUDGET_MS);
-    child.stdout?.on("data", (chunk: Buffer) => {
-      output += chunk.toString("utf8");
-    });
-    child.once("error", () => finish(false));
-    child.once("exit", (code) => finish(code === 0 && output.includes(SUCCESS_MARKER)));
-  });
+  return await runPowerShell(
+    richToastScript(
+      buildToastXml(notification, iconUri),
+      toastAppId(),
+      notification.tag ? toastTag(notification.tag) : undefined,
+    ),
+    WINDOWS_RICH_TOAST_BUDGET_MS,
+  );
 }
 
 /**

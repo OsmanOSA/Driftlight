@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { showWindowsToast } from "./windows-toast.js";
+import { dismissWindowsToasts, showWindowsToast } from "./windows-toast.js";
 
 /**
  * Processus détaché qui affiche une notification native, puis s'éteint.
@@ -42,13 +42,31 @@ async function main(): Promise<void> {
     icon?: string;
     persistent?: boolean;
     attribution?: string;
+    tag?: string;
+    dismiss?: string[];
   };
+
+  if (Array.isArray(payload.dismiss)) {
+    if (process.platform === "win32") {
+      await dismissWindowsToasts(payload.dismiss);
+      return;
+    }
+    // macOS : terminal-notifier retire par identifiant de groupe.
+    const module: unknown = await import("node-notifier");
+    const target = isNotifierLike(module) ? module : (module as { default?: unknown }).default;
+    if (!isNotifierLike(target)) return;
+    for (const tag of payload.dismiss) {
+      await new Promise<void>((resolve) => target.notify({ remove: tag }, () => resolve()));
+    }
+    return;
+  }
   const notification = {
     title: payload.title ?? "DriftLight",
     message: payload.message ?? "",
     sound: payload.sound ?? true,
     ...(payload.persistent === true ? { persistent: true } : {}),
     ...(payload.attribution ? { attribution: payload.attribution } : {}),
+    ...(payload.tag ? { tag: payload.tag } : {}),
     ...(payload.icon !== undefined && existsSync(payload.icon) ? { icon: payload.icon } : {}),
   };
   if (process.platform === "win32") {
@@ -73,6 +91,9 @@ async function main(): Promise<void> {
         ? { subtitle, message: body.join("\n") }
         : { message: notification.message }),
       sound: notification.sound,
+      // Le groupe est l'identifiant par lequel macOS retire une notification :
+      // sans lui, une alerte affichée ne peut plus être rappelée.
+      ...(notification.tag ? { group: notification.tag } : {}),
       ...(notification.icon ? { icon: notification.icon, contentImage: notification.icon } : {}),
       wait: false,
     },

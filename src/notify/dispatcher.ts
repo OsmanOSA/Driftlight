@@ -4,6 +4,7 @@ import { loadNativeBackend, type BackendLoader, type NativeNotification, type No
 import { severityIconPath } from "./icons.js";
 import { notificationMessage, notificationTitle, type HookOutcome } from "./message.js";
 import { NotificationLedger, type ReservationOutcome } from "./notified-log.js";
+import { rememberPendingToasts, takePendingToasts } from "./pending-toasts.js";
 
 export type NotificationOutcome =
   | "sent"
@@ -69,13 +70,41 @@ export function buildNotification(
   return {
     // Une alerte qui retient une action doit rester visible jusqu'à ce qu'on
     // s'en occupe : elle attend une décision, elle n'informe pas au passage.
-    ...(resolved === "recorded" ? {} : { persistent: true }),
+    ...(resolved === "recorded" ? {} : { persistent: true, tag: event.id }),
     attribution: "DriftLight — voyant local de dérive",
     title: notificationTitle(root, event, resolved),
     message: notificationMessage(root, event, intent),
     sound: config.notificationSound,
     ...(icon ? { icon } : {}),
   };
+}
+
+/**
+ * Retire les alertes de cette session encore affichées.
+ *
+ * Appelée dès que la décision qu'elles attendaient est prise — l'outil a tourné,
+ * le tour s'est terminé, un nouveau prompt est arrivé. Laisser une notification
+ * réclamer une décision déjà rendue apprend à l'utilisateur à les ignorer, ce
+ * qu'un voyant ne doit jamais enseigner.
+ *
+ * Ne rejette jamais : un retrait manqué laisse une notification de trop, ce qui
+ * reste infiniment moins grave qu'un hook interrompu.
+ */
+export async function dismissPendingNotifications(
+  root: string,
+  sessionId: string,
+  options: DispatchOptions = {},
+): Promise<string[]> {
+  try {
+    if (notificationsDisabledByEnvironment(options.environment)) return [];
+    const tags = takePendingToasts(root, sessionId);
+    if (tags.length === 0) return [];
+    const backend = await (options.loadBackend ?? loadNativeBackend)().catch(() => null);
+    await backend?.dismiss?.(tags);
+    return tags;
+  } catch {
+    return [];
+  }
 }
 
 const RESERVATION_TO_OUTCOME: Record<Exclude<ReservationOutcome, "accepted">, NotificationOutcome> = {
@@ -154,18 +183,22 @@ export async function dispatchNotifications(
       backend = null;
     }
 
+    const persistent: string[] = [];
     for (const event of pending) {
       if (!backend) {
         decisions.push({ eventId: event.id, level: event.level, outcome: "backend-unavailable" });
         continue;
       }
       try {
-        await backend.send(buildNotification(root, event, config, outcomeFor(event), intent));
+        const notification = buildNotification(root, event, config, outcomeFor(event), intent);
+        await backend.send(notification);
+        if (notification.tag) persistent.push(notification.tag);
         decisions.push({ eventId: event.id, level: event.level, outcome: "sent" });
       } catch {
         decisions.push({ eventId: event.id, level: event.level, outcome: "backend-unavailable" });
       }
     }
+    rememberPendingToasts(root, sessionId, persistent);
     return decisions;
   } catch {
     return decisions;

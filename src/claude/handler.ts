@@ -13,7 +13,7 @@ import {
 } from "../intent/agent-context.js";
 import { diffSnapshots, scanRepository } from "../observer/snapshot.js";
 import { updateImportGraph } from "../profile/import-graph.js";
-import { dispatchNotifications } from "../notify/dispatcher.js";
+import { dismissPendingNotifications, dispatchNotifications } from "../notify/dispatcher.js";
 import { suppressedByCap } from "../notify/notified-log.js";
 import { safeIdentifier } from "../shared/paths.js";
 import {
@@ -197,6 +197,13 @@ export async function handleClaudeHook(input: ClaudeHookInput): Promise<ClaudeHo
   }
 
   const { store, session } = await ensureSession(input);
+
+  // Toute alerte encore affichée attendait une décision. Ces trois événements
+  // signifient qu'elle a été prise — l'outil a tourné, le tour s'est achevé, ou
+  // un nouveau prompt est arrivé. La notification n'a plus rien à demander.
+  if (["PostToolUse", "Stop", "UserPromptSubmit", "SessionEnd"].includes(input.hook_event_name)) {
+    await dismissPendingNotifications(session.cwd, session.id).catch(() => []);
+  }
 
   if (input.hook_event_name === "UserPromptSubmit") {
     if (input.prompt) {

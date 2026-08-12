@@ -9,6 +9,7 @@ import type { DriftLightConfig, SessionEvent, Severity } from "../src/domain/typ
 import type { BackendLoader, NativeNotification, NotifierBackend } from "../src/notify/backend.js";
 import {
   buildNotification,
+  dismissPendingNotifications,
   dispatchNotifications,
   notificationsDisabledByEnvironment,
   shouldNotify,
@@ -24,8 +25,11 @@ import { identityStatus } from "../src/notify/identity.js";
 import {
   buildToastXml,
   DEFAULT_TOAST_APP_ID,
+  dismissToastScript,
+  DRIFTLIGHT_TOAST_APP_ID,
   richToastScript,
   toastAppId,
+  toastTag,
   WINDOWS_TOAST_STARTUP_MS,
   windowsToastArguments,
 } from "../src/notify/windows-toast.js";
@@ -604,9 +608,131 @@ test("the PowerShell payload survives any quoting through base64", () => {
   assert.equal(Buffer.from(encoded, "base64").toString("utf8"), xml);
 });
 
-test("the toast identity follows the environment override", () => {
-  assert.equal(toastAppId({ DRIFTLIGHT_TOAST_APPID: "Mon.Identite" }), "Mon.Identite");
-  assert.equal(toastAppId({ DRIFTLIGHT_TOAST_APPID: "   " }), DEFAULT_TOAST_APP_ID);
+// --- Retrait d'une alerte dont la décision est prise ---------------------------
+
+/**
+ * Signalé en usage réel : approuver la commande dans l'agent laissait la
+ * notification à l'écran, à réclamer une décision déjà rendue. Une alerte qui
+ * survit à son objet apprend à l'utilisateur à les ignorer toutes.
+ */
+test("a persistent alert carries the tag that will let it be withdrawn", () => {
+  const held = buildNotification("/repo", event("e-held", "RED"), config(), "asked");
+  assert.equal(held.tag, "e-held");
+  assert.equal(held.persistent, true);
+
+  const recorded = buildNotification("/repo", event("e-seen", "RED"), config(), "recorded");
+  assert.equal(recorded.tag, undefined, "une alerte qui ne retient rien n'a rien à retirer");
+  assert.equal(recorded.persistent, undefined);
+});
+
+test("the tag stays within what Windows accepts", () => {
+  assert.equal(toastTag("event-123_abc.def"), "event-123_abc.def");
+  assert.equal(toastTag("chemin/avec:signes"), "chemin-avec-signes");
+  assert.equal(toastTag("x".repeat(200)).length, 64);
+});
+
+test("the withdrawal script names every tag, the group and the identity", () => {
+  const script = dismissToastScript(["un", "deux"], "Mon.Identite");
+  assert.match(script, /@\('un','deux'\)/);
+  assert.match(script, /'driftlight'/);
+  assert.match(script, /'Mon\.Identite'/);
+  assert.match(script, /History/);
+});
+
+test("a quote in an identity cannot break out of the script", () => {
+  const script = dismissToastScript(["a'b"], "App'Id");
+  assert.match(script, /'a''b'/);
+  assert.match(script, /'App''Id'/);
+});
+
+test("the toast is labelled at send time, or it can never be found again", () => {
+  const xml = buildToastXml(richNotification);
+  assert.match(richToastScript(xml, "App", "etiquette"), /\$toast\.Tag='etiquette'/);
+  assert.match(richToastScript(xml, "App", "etiquette"), /\$toast\.Group='driftlight'/);
+  assert.ok(!richToastScript(xml, "App").includes("$toast.Tag"));
+});
+
+test("pending alerts are withdrawn once, then forgotten", async (context) => {
+  const root = await temporaryRoot(context);
+  const withdrawn: string[][] = [];
+  const notifier = fakeNotifier();
+  const loadBackend: BackendLoader = async () => ({
+    name: "fake",
+    send: notifier.loader ? async (notification) => {
+      (await notifier.loader()) as unknown;
+      notifier.sent.push(notification);
+    } : async () => undefined,
+    dismiss: async (tags) => {
+      withdrawn.push([...tags]);
+    },
+  });
+
+  await dispatchNotifications(root, [event("e1", "RED")], config(), SESSION, {
+    loadBackend,
+    blockedEventIds: ["e1"],
+    environment: NEUTRAL_ENV,
+  });
+
+  assert.deepEqual(
+    await dismissPendingNotifications(root, SESSION, { loadBackend, environment: NEUTRAL_ENV }),
+    ["e1"],
+  );
+  assert.deepEqual(withdrawn, [["e1"]]);
+
+  assert.deepEqual(
+    await dismissPendingNotifications(root, SESSION, { loadBackend, environment: NEUTRAL_ENV }),
+    [],
+    "un retrait déjà effectué ne doit pas être rejoué",
+  );
+  assert.equal(withdrawn.length, 1);
+});
+
+test("another session's alerts are never withdrawn by mistake", async (context) => {
+  const root = await temporaryRoot(context);
+  const notifier = fakeNotifier();
+  await dispatchNotifications(root, [event("e1", "RED")], config(), "session-a", {
+    loadBackend: notifier.loader,
+    blockedEventIds: ["e1"],
+    environment: NEUTRAL_ENV,
+  });
+
+  assert.deepEqual(
+    await dismissPendingNotifications(root, "session-b", {
+      loadBackend: notifier.loader,
+      environment: NEUTRAL_ENV,
+    }),
+    [],
+  );
+  assert.deepEqual(
+    await dismissPendingNotifications(root, "session-a", {
+      loadBackend: notifier.loader,
+      environment: NEUTRAL_ENV,
+    }),
+    ["e1"],
+  );
+});
+
+test("a backend unable to withdraw never breaks the caller", async (context) => {
+  const root = await temporaryRoot(context);
+  const notifier = fakeNotifier();
+  await dispatchNotifications(root, [event("e1", "RED")], config(), SESSION, {
+    loadBackend: notifier.loader,
+    blockedEventIds: ["e1"],
+    environment: NEUTRAL_ENV,
+  });
+  // Le faux backend n'implémente pas `dismiss` : l'appel doit rester sans effet
+  // plutôt que de lever, comme lorsqu'une bibliothèque ancienne est installée.
+  await assert.doesNotReject(dismissPendingNotifications(root, SESSION, {
+    loadBackend: notifier.loader,
+    environment: NEUTRAL_ENV,
+  }));
+});
+
+test("the toast identity follows the override, then what is installed", () => {
+  assert.equal(toastAppId({ DRIFTLIGHT_TOAST_APPID: "Mon.Identite" }, false), "Mon.Identite");
+  assert.equal(toastAppId({ DRIFTLIGHT_TOAST_APPID: "   " }, false), DEFAULT_TOAST_APP_ID);
+  assert.equal(toastAppId({}, false), DEFAULT_TOAST_APP_ID);
+  assert.equal(toastAppId({}, true), DRIFTLIGHT_TOAST_APP_ID);
 });
 
 test("the application identity is reported as unsupported off Windows", () => {

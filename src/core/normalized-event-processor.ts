@@ -7,7 +7,7 @@ import type { ChangeKind, Classifier, SessionEvent, SessionRecord } from "../dom
 import { resolveGitRoot, resolveObservableRoot } from "../git/baseline.js";
 import { readCurrentIntentSync, writeCurrentIntent } from "../intent/current-intent.js";
 import { isReadLikeTool } from "../intent/agent-context.js";
-import { dispatchNotifications } from "../notify/dispatcher.js";
+import { dismissPendingNotifications, dispatchNotifications } from "../notify/dispatcher.js";
 import { diffSnapshots, scanRepository } from "../observer/snapshot.js";
 import { updateImportGraph } from "../profile/import-graph.js";
 import { isInsideRoot, safeIdentifier } from "../shared/paths.js";
@@ -143,6 +143,8 @@ export class NormalizedEventProcessor {
     const prompt = string(event.payload.prompt);
     if (prompt === undefined) return;
     const { store, session } = await this.context(event);
+    // Un nouveau tour commence : les alertes du précédent n'attendent plus rien.
+    await dismissPendingNotifications(session.cwd, session.id).catch(() => []);
     setCurrentIntent(session, prompt, "user-follow-up");
     await writeCurrentIntent(session.cwd, prompt, { turnId: nativeTurnId(event), sessionId: session.id });
     await store.save(session);
@@ -228,6 +230,8 @@ export class NormalizedEventProcessor {
 
   private async toolCompleted(event: ScopeLightEvent): Promise<void> {
     const { store, session } = await this.context(event);
+    // L'outil a tourné : la décision qu'attendait l'alerte est prise.
+    await dismissPendingNotifications(session.cwd, session.id).catch(() => []);
     const toolName = string(event.payload.toolName) ?? "";
     if (isReadLikeTool(toolName)) {
       const candidates = Array.isArray(event.payload.readFiles)

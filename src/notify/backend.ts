@@ -31,11 +31,18 @@ export interface NativeNotification {
   persistent?: boolean;
   /** Ligne discrète en pied de notification, sous le corps du message. */
   attribution?: string;
+  /**
+   * Étiquette permettant de retirer la notification plus tard. Sans elle, une
+   * alerte persistante ne peut plus être rappelée une fois affichée.
+   */
+  tag?: string;
 }
 
 export interface NotifierBackend {
   readonly name: string;
   send(notification: NativeNotification): Promise<void>;
+  /** Retire des notifications déjà affichées, désignées par leur étiquette. */
+  dismiss?(tags: readonly string[]): Promise<void>;
 }
 
 export type BackendLoader = () => Promise<NotifierBackend | null>;
@@ -59,22 +66,29 @@ function runnerPath(): string {
   return path.join(path.dirname(fileURLToPath(import.meta.url)), "notify-runner.js");
 }
 
+/**
+ * Détaché : l'appelant reprend la main tout de suite, et le processus
+ * d'affichage survit à la fin du hook au lieu d'être tué avec lui.
+ */
+function runDetached(payload: unknown): void {
+  const child = spawn(process.execPath, [runnerPath(), JSON.stringify(payload)], {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  child.on("error", () => {
+    // Node introuvable ou spawn refusé : la notification est perdue, pas le verdict.
+  });
+  child.unref();
+}
+
 export const loadNativeBackend: BackendLoader = async () => {
   if (!isBackendInstalled()) return null;
   return {
     name: BACKEND_MODULE,
-    send: async (notification) => {
-      // Détaché : l'appelant reprend la main tout de suite, et le processus
-      // d'affichage survit à la fin du hook au lieu d'être tué avec lui.
-      const child = spawn(process.execPath, [runnerPath(), JSON.stringify(notification)], {
-        detached: true,
-        stdio: "ignore",
-        windowsHide: true,
-      });
-      child.on("error", () => {
-        // Node introuvable ou spawn refusé : la notification est perdue, pas le verdict.
-      });
-      child.unref();
+    send: async (notification) => runDetached(notification),
+    dismiss: async (tags) => {
+      if (tags.length > 0) runDetached({ dismiss: [...tags] });
     },
   };
 };
