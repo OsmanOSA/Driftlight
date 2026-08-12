@@ -67,7 +67,7 @@ async function setupPreexistingWork(context: test.TestContext): Promise<string> 
   return root;
 }
 
-test("a red PreToolUse verdict forces user confirmation and records its ruleId", async (context) => {
+test("a red PreToolUse verdict refuses the action and records its ruleId", async (context) => {
   const root = await setup(context);
   await handleClaudeHook(hook(root, "UserPromptSubmit", {
     prompt: "Fix src/anchor.ts",
@@ -80,7 +80,7 @@ test("a red PreToolUse verdict forces user confirmation and records its ruleId",
     tool_use_id: "tool-red",
   }));
 
-  assert.equal(output?.hookSpecificOutput?.permissionDecision, "ask");
+  assert.equal(output?.hookSpecificOutput?.permissionDecision, "deny");
   assert.match(output?.hookSpecificOutput?.permissionDecisionReason ?? "", /sensitive-file/);
   assert.match(output?.hookSpecificOutput?.permissionDecisionReason ?? "", /\.env/);
   const session = await new SessionStore(root).load("claude-integration-hook");
@@ -217,7 +217,15 @@ test("destroying unsaved work is refused outright, not merely questioned", async
   );
 });
 
-test("a red verdict on recoverable work still only asks", async (context) => {
+/**
+ * Le rouge bloque, sans exception — c'est ce que la couleur promet.
+ *
+ * `irreversible` ne retenait qu'une partie du rouge : le reste alertait sans
+ * rien arrêter, et l'utilisateur voyait passer des alertes rouges pendant que
+ * l'agent poursuivait. Un rouge qui bloque une fois sur deux apprend à ignorer
+ * le rouge. La nuance reste offerte à qui la veut ; elle n'est plus le défaut.
+ */
+test("a red verdict blocks even when the loss would be recoverable", async (context) => {
   const root = await setup(context);
   await handleClaudeHook(hook(root, "UserPromptSubmit", {
     prompt: "Fix src/anchor.ts",
@@ -229,11 +237,33 @@ test("a red verdict on recoverable work still only asks", async (context) => {
     tool_input: { file_path: path.join(root, ".env"), content: "SECRET=1\n" },
   }));
 
+  assert.equal(output?.hookSpecificOutput?.permissionDecision, "deny");
+  assert.equal(output?.continue, false, "et l'agent s'arrête, comme pour tout refus");
+});
+
+test("the irreversible-only nuance remains available to whoever wants it", async (context) => {
+  const root = await setup(context);
+  await fs.mkdir(path.join(root, ".driftlight"), { recursive: true });
+  await fs.writeFile(
+    path.join(root, ".driftlight", "config.json"),
+    JSON.stringify({ enforceRed: "irreversible" }),
+  );
+  await handleClaudeHook(hook(root, "UserPromptSubmit", {
+    prompt: "Fix src/anchor.ts",
+    prompt_id: "turn-nuance",
+  }));
+
+  const output = await handleClaudeHook(hook(root, "PreToolUse", {
+    tool_name: "Write",
+    tool_input: { file_path: path.join(root, ".env"), content: "SECRET=1\n" },
+  }));
+
   assert.equal(
     output?.hookSpecificOutput?.permissionDecision,
     "ask",
-    "par défaut DriftLight demande ; il ne refuse que l'irréversible",
+    "écrire un secret ne détruit rien : sous ce réglage, DriftLight demande",
   );
+  assert.equal(output?.continue, undefined, "une demande ne coupe pas le tour");
 });
 
 test("enforceRed settings move the line in both directions", async (context) => {
@@ -314,10 +344,15 @@ test("a recursive deletion inside the repository is refused, not merely queried"
  * sauvegardé qui justifie la fermeté, pas le nom de la commande. Sans rien à
  * perdre, un refus ferme serait un obstacle gratuit.
  */
-test("the same deletion in a clean repository only asks", async (context) => {
+test("the same deletion in a clean repository only asks under the nuanced setting", async (context) => {
   const root = await setup(context);
+  await fs.mkdir(path.join(root, ".driftlight"), { recursive: true });
+  await fs.writeFile(
+    path.join(root, ".driftlight", "config.json"),
+    JSON.stringify({ enforceRed: "irreversible" }),
+  );
   await handleClaudeHook(hook(root, "UserPromptSubmit", {
-    prompt: "Nettoie le dossier de sources",
+    prompt: "Range le projet",
     prompt_id: "turn-rm-clean",
   }));
 
@@ -360,11 +395,16 @@ test("a firm refusal stops the agent, not merely the command", async (context) =
 
 /**
  * L'arrêt est proportionné au refus. Une simple demande de confirmation laisse
- * l'agent travailler : la couper ferait payer à chaque orange le prix d'une
+ * l'agent travailler : la couper ferait payer à chaque hésitation le prix d'une
  * perte définitive.
  */
 test("a request for confirmation leaves the agent running", async (context) => {
   const root = await setup(context);
+  await fs.mkdir(path.join(root, ".driftlight"), { recursive: true });
+  await fs.writeFile(
+    path.join(root, ".driftlight", "config.json"),
+    JSON.stringify({ enforceRed: "irreversible" }),
+  );
   await handleClaudeHook(hook(root, "UserPromptSubmit", {
     prompt: "Corrige la faute de frappe dans README.md",
     prompt_id: "turn-ask",
@@ -446,7 +486,7 @@ test("the classifier reloads current-intent.json between successive turns", asyn
     tool_name: "Write",
     tool_input: { file_path: path.join(root, ".env"), content: "TWO=2\n" },
   }));
-  assert.equal(second?.hookSpecificOutput?.permissionDecision, "ask");
+  assert.equal(second?.hookSpecificOutput?.permissionDecision, "deny");
   assert.equal(readCurrentIntentSync(root, "claude-integration-hook")?.turnId, "turn-two");
 });
 

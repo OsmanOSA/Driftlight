@@ -7,7 +7,12 @@ export const ENFORCEMENT_LEVELS = ["never", "irreversible", "always"] as const;
 export const DEFAULT_CONFIG: DriftLightConfig = {
   blockOnRed: true,
   blockOnOrange: false,
-  enforceRed: "irreversible",
+  // Une couleur ne doit vouloir dire qu'une chose. « Irréversible » ne bloquait
+  // qu'une partie du rouge : le reste alertait sans rien retenir, et un rouge
+  // qui bloque une fois sur deux apprend à ignorer le rouge. La nuance reste
+  // disponible, elle n'est simplement plus le comportement par défaut — les
+  // fausses alertes qui la rendaient nécessaire ont été corrigées.
+  enforceRed: "always",
   haltOnRefusal: true,
   largeLineDeletionThreshold: 50,
   notifyOnRed: true,

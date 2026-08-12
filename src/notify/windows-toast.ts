@@ -256,23 +256,20 @@ async function showRichToast(notification: NativeNotification): Promise<boolean>
  * uniquement son processus après que Windows a enregistré le toast.
  */
 export async function showWindowsToast(notification: NativeNotification): Promise<void> {
-  // Deux surfaces, et c'est l'interruption qui tranche entre elles — pas la
-  // gravité.
+  // Une seule apparence pour toutes les alertes.
   //
-  // Le panneau s'impose à l'écran, porte la décision et attend qu'on la rende.
-  // Il ne se justifie donc que si l'agent est réellement arrêté. Utilisé pour
-  // toute alerte rouge, il s'ouvrait au début de l'appel d'outil et disparaissait
-  // à sa fin : pour une commande rapide, un clignotement illisible.
+  // Le panneau servait au rouge, le toast au reste : deux aspects différents
+  // arrivaient sans raison lisible, puisque le critère — l'agent est-il arrêté —
+  // ne se voit pas à l'écran. Une notification doit être reconnaissable avant
+  // d'être lue ; en alterner l'apparence oblige à la déchiffrer d'abord.
   //
-  // Le toast, lui, est plafonné par Windows à quatre éléments de texte — il ne
-  // peut pas tout porter — mais il survit à son processus et se relit au centre
-  // de notifications. C'est ce qu'il faut à une alerte qui informe sans retenir.
+  // Ce que le rouge porte en plus est dans son contenu, pas dans sa forme : lui
+  // seul propose une décision, parce que lui seul en attend une.
   //
-  // Le panneau doit prouver qu'il s'est affiché, faute de quoi on revient au
-  // toast : perdre la densité est acceptable, perdre l'alerte ne l'est pas.
-  if (notification.halted === true && await showWindowsPanel(notification, WINDOWS_PANEL_CONFIRM_MS)) {
-    return;
-  }
+  // Le toast redevient ce qu'il aurait dû rester — un repli. Le panneau doit
+  // prouver qu'il s'est affiché, faute de quoi on y retombe : perdre la densité
+  // est acceptable, perdre l'alerte ne l'est pas.
+  if (await showWindowsPanel(notification, WINDOWS_PANEL_CONFIRM_MS)) return;
   if (await showRichToast(notification)) {
     const readyFile = safePanelReadyFile(notification.readyFile);
     if (readyFile) writeFileSync(readyFile, "ready", { encoding: "utf8", mode: 0o600 });

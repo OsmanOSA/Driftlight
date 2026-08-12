@@ -148,7 +148,7 @@ test("corrupted local state degrades precision, it does not blind the light", as
 
   assert.equal(
     output?.hookSpecificOutput?.permissionDecision,
-    "ask",
+    "deny",
     "un secret doit rester protégé même sans intention, profil ni graphe lisibles",
   );
   assert.match(output?.hookSpecificOutput?.permissionDecisionReason ?? "", /sensitive-file/);
