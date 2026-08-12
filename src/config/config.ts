@@ -8,6 +8,7 @@ export const DEFAULT_CONFIG: DriftLightConfig = {
   blockOnRed: true,
   blockOnOrange: false,
   enforceRed: "irreversible",
+  haltOnRefusal: true,
   largeLineDeletionThreshold: 50,
   notifyOnRed: true,
   notifyOnOrange: false,
@@ -37,6 +38,7 @@ function merge(base: DriftLightConfig, parsed: Partial<DriftLightConfig>): Drift
     enforceRed: ENFORCEMENT_LEVELS.includes(parsed.enforceRed as never)
       ? parsed.enforceRed as DriftLightConfig["enforceRed"]
       : base.enforceRed,
+    haltOnRefusal: boolean(parsed.haltOnRefusal, base.haltOnRefusal),
     largeLineDeletionThreshold: typeof parsed.largeLineDeletionThreshold === "number"
       && Number.isInteger(parsed.largeLineDeletionThreshold)
       && parsed.largeLineDeletionThreshold > 0

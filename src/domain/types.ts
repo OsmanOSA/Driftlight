@@ -286,6 +286,14 @@ export interface DriftLightConfig {
   blockOnRed: boolean;
   blockOnOrange: boolean;
   enforceRed: RedEnforcement;
+  /**
+   * Sur un refus ferme, arrête l'agent au lieu de ne bloquer que l'appel.
+   *
+   * Sans cela, l'agent reprend la main immédiatement et peut tenter autre
+   * chose : l'utilisateur voit une suite de refus pendant que le travail se
+   * poursuit, ce qui ne se distingue pas d'un garde-fou contourné.
+   */
+  haltOnRefusal: boolean;
   largeLineDeletionThreshold: number;
   notifyOnRed: boolean;
   notifyOnOrange: boolean;

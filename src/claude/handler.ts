@@ -36,6 +36,22 @@ export interface ClaudeHookOutput {
   systemMessage?: string;
   suppressOutput?: boolean;
   /**
+   * Arrête l'agent, et pas seulement l'appel en cours.
+   *
+   * `permissionDecision: "deny"` ne retient qu'une commande : l'agent reprend
+   * la main aussitôt et peut en tenter une autre. Observé en usage réel, cela
+   * donne une succession de refus pendant que l'agent poursuit — indiscernable,
+   * pour qui regarde l'écran, d'un garde-fou qu'on contourne. Or DriftLight
+   * demande précisément à l'agent de ne pas insister et de rendre la main.
+   *
+   * `continue: false` l'impose au lieu de le demander. Réservé au refus ferme,
+   * là où la perte serait définitive : ce champ prime sur toute décision par
+   * événement, et coupe le tour en cours.
+   */
+  continue?: boolean;
+  /** Motif affiché à l'utilisateur — et à lui seul — quand le tour est coupé. */
+  stopReason?: string;
+  /**
    * Séquence d'échappement que Claude Code émet lui-même vers le terminal.
    * Restreinte par Claude Code aux OSC 0/1/2/9/99/777 et BEL : toute séquence
    * hors allowlist fait ignorer le champ entier.
@@ -324,9 +340,22 @@ export async function handleClaudeHook(input: ClaudeHookInput): Promise<ClaudeHo
     const subject = blockingEvent.path ?? blockingEvent.detail ?? "action";
     const reason = blockingEvent.reasons[0] ?? blockingEvent.ruleId;
     const message = `DriftLight ${blockingEvent.level} — ${subject} — ${blockingEvent.ruleId}: ${reason} [${blockingEvent.id}]`;
+    // Refuser l'appel sans arrêter l'agent ne protège qu'à moitié : il enchaîne
+    // sur autre chose, et l'utilisateur voit défiler des refus pendant que le
+    // travail continue. Quand la perte serait définitive, la main lui revient.
+    const halt = denied && config.haltOnRefusal;
     return {
       ...title,
       suppressOutput: true,
+      ...(halt
+        ? {
+          continue: false,
+          stopReason: `DriftLight a refusé cette action : ${subject}.`
+            + " L'agent est arrêté et la décision vous revient."
+            + " Pour l'autoriser : `driftlight add-scope \"<chemin ou instruction>\"`,"
+            + ` puis redemandez-la. Détail : \`driftlight explain ${blockingEvent.id}\`.`,
+        }
+        : {}),
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: denied ? "deny" : "ask",

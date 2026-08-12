@@ -329,6 +329,81 @@ test("the same deletion in a clean repository only asks", async (context) => {
   assert.equal(output?.hookSpecificOutput?.permissionDecision, "ask");
 });
 
+/**
+ * Refuser une commande n'est pas arrêter un agent.
+ *
+ * `permissionDecision: "deny"` ne retient que l'appel en cours : la main revient
+ * aussitôt à l'agent, qui peut en tenter un autre. Observé en usage réel, cela
+ * produit une succession de refus pendant que le travail se poursuit — et pour
+ * qui regarde l'écran, c'est indiscernable d'un garde-fou contourné. DriftLight
+ * demande d'ailleurs à l'agent, dans ce même message, de ne pas insister : sans
+ * `continue: false`, il ne fait que le demander.
+ */
+test("a firm refusal stops the agent, not merely the command", async (context) => {
+  const root = await setupPreexistingWork(context);
+  await handleClaudeHook(hook(root, "UserPromptSubmit", {
+    prompt: "Range le projet",
+    prompt_id: "turn-halt",
+  }));
+
+  const output = await handleClaudeHook(hook(root, "PreToolUse", {
+    tool_name: "Bash",
+    tool_input: { command: "rm -rf src" },
+  }));
+
+  assert.equal(output?.hookSpecificOutput?.permissionDecision, "deny");
+  assert.equal(output?.continue, false, "le tour doit être coupé, pas seulement la commande");
+  assert.match(output?.stopReason ?? "", /DriftLight a refusé/);
+  // Le motif s'adresse à l'utilisateur seul : il doit dire comment reprendre.
+  assert.match(output?.stopReason ?? "", /add-scope/);
+});
+
+/**
+ * L'arrêt est proportionné au refus. Une simple demande de confirmation laisse
+ * l'agent travailler : la couper ferait payer à chaque orange le prix d'une
+ * perte définitive.
+ */
+test("a request for confirmation leaves the agent running", async (context) => {
+  const root = await setup(context);
+  await handleClaudeHook(hook(root, "UserPromptSubmit", {
+    prompt: "Corrige la faute de frappe dans README.md",
+    prompt_id: "turn-ask",
+  }));
+
+  const output = await handleClaudeHook(hook(root, "PreToolUse", {
+    tool_name: "Write",
+    tool_input: { file_path: path.join(root, ".env"), content: "API_KEY=sk-live-abcdef1234567890\n" },
+  }));
+
+  assert.equal(output?.hookSpecificOutput?.permissionDecision, "ask");
+  assert.equal(output?.continue, undefined, "une demande ne coupe pas le tour");
+});
+
+/**
+ * L'arrêt reste débrayable : il change ce que vit l'utilisateur à chaque refus,
+ * et ce genre de décision lui appartient.
+ */
+test("halting can be turned off without giving up the refusal", async (context) => {
+  const root = await setupPreexistingWork(context);
+  await fs.mkdir(path.join(root, ".driftlight"), { recursive: true });
+  await fs.writeFile(
+    path.join(root, ".driftlight", "config.json"),
+    JSON.stringify({ haltOnRefusal: false }),
+  );
+  await handleClaudeHook(hook(root, "UserPromptSubmit", {
+    prompt: "Range le projet",
+    prompt_id: "turn-no-halt",
+  }));
+
+  const output = await handleClaudeHook(hook(root, "PreToolUse", {
+    tool_name: "Bash",
+    tool_input: { command: "rm -rf src" },
+  }));
+
+  assert.equal(output?.hookSpecificOutput?.permissionDecision, "deny", "le refus demeure");
+  assert.equal(output?.continue, undefined, "seul l'arrêt est désarmé");
+});
+
 test("an explicitly named file is never signaled, including a sensitive path", async (context) => {
   const root = await setup(context);
   await handleClaudeHook(hook(root, "UserPromptSubmit", {
