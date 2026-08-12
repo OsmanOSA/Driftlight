@@ -100,6 +100,28 @@ test("the state directory is created for its owner only", async (context) => {
   }
 });
 
+/**
+ * La licence doit accompagner le logiciel là où il est installé. Un fichier
+ * présent dans le dépôt mais absent du paquet laisserait un testeur sans les
+ * conditions qu'il est censé accepter.
+ */
+test("the licence travels with the package, and is referenced by it", async () => {
+  // Le test s'exécute compilé depuis dist/test/ : la racine est deux crans plus haut.
+  const repositoryRoot = new URL("../../", import.meta.url);
+  const manifest = JSON.parse(
+    await fs.readFile(new URL("package.json", repositoryRoot), "utf8"),
+  ) as { license?: string; files?: string[] };
+
+  assert.equal(manifest.license, "SEE LICENSE IN LICENSE");
+  assert.ok(manifest.files?.includes("LICENSE"), "le paquet doit embarquer la licence");
+
+  const licence = await fs.readFile(new URL("LICENSE", repositoryRoot), "utf8");
+  assert.match(licence, /Licence d'évaluation/);
+  assert.match(licence, /node-notifier/, "les composants tiers doivent être reconnus");
+  assert.match(licence, /LGPL-3\.0/, "SnoreToast est sous LGPL et doit être nommé");
+  assert.match(licence, /driftlight claude uninstall/, "la sortie doit être écrite noir sur blanc");
+});
+
 // --- Désinstallation ----------------------------------------------------------
 
 const handler = {

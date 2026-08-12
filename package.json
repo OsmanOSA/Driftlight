@@ -7,10 +7,12 @@
     "driftlight": "dist/src/cli.js",
     "driftlight-hook": "dist/src/adapters/codex/hook-cli.js"
   },
+  "license": "SEE LICENSE IN LICENSE",
   "files": [
     "dist/src",
     "docs",
     "assets",
+    "LICENSE",
     "README.md",
     "driftlight.scoring.json"
   ],
@@ -27,7 +29,6 @@
     "@types/node-notifier": "^8.0.5",
     "typescript": "^5.9.0"
   },
-  "license": "UNLICENSED",
   "private": true,
   "optionalDependencies": {
     "node-notifier": "^10.0.1"

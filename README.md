@@ -71,6 +71,14 @@ driftlight notify uninstall    # retire l'identité de notification (Windows)
 
 Retirer entièrement DriftLight : `driftlight claude uninstall --global`, puis supprimer `~/.driftlight`.
 
+## Licence
+
+DriftLight est distribué sous **licence d'évaluation** : vous pouvez l'installer, l'utiliser et le désinstaller librement, à des fins d'évaluation et d'usage interne. La redistribution et la diffusion d'œuvres dérivées ne sont pas autorisées. Le texte complet figure dans [LICENSE](LICENSE).
+
+Le logiciel est fourni en l'état, sans garantie. C'est un **dispositif d'alerte** : il signale ce qu'il estime digne d'attention et peut se tromper dans les deux sens. Il ne remplace ni la relecture, ni la sauvegarde, ni le contrôle de version.
+
+Les composants tiers restent régis par leurs propres licences : `node-notifier` (MIT), dépendance optionnelle, et `SnoreToast` (LGPL-3.0), que node-notifier distribue et que DriftLight invoque comme programme distinct, sans liaison de code.
+
 ## Démonstration locale minimale
 
 Dans un dépôt Git de test, ouvrez un premier terminal :

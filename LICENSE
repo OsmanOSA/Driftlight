@@ -1,0 +1,126 @@
+DriftLight — Licence d'évaluation
+=================================
+
+Copyright (c) 2026 [VOTRE NOM OU RAISON SOCIALE]. Tous droits réservés.
+
+REMPLACEZ LA MENTION CI-DESSUS PAR L'IDENTITÉ DU TITULAIRE DES DROITS
+AVANT TOUTE DIFFUSION.
+
+Le présent document régit l'utilisation du logiciel DriftLight (« le
+Logiciel »), y compris son code source, ses binaires compilés, sa
+documentation et les ressources qui l'accompagnent.
+
+
+1. Concession
+
+Le titulaire des droits (« le Concédant ») vous accorde un droit
+personnel, non exclusif, non transférable, non sous-licenciable et
+révocable :
+
+  a) d'installer le Logiciel sur les machines que vous utilisez ou
+     administrez ;
+  b) de l'exécuter à des fins d'évaluation, d'essai et d'usage interne ;
+  c) de le désinstaller et d'en supprimer les données à tout moment.
+
+Cette concession est gratuite et ne constitue pas une vente.
+
+
+2. Restrictions
+
+Sauf accord écrit préalable du Concédant, vous ne pouvez pas :
+
+  a) redistribuer, publier, vendre, louer, prêter ou mettre à
+     disposition de tiers le Logiciel ou une partie de celui-ci ;
+  b) concéder de sous-licence, ni transférer les droits reçus ;
+  c) distribuer une œuvre dérivée du Logiciel. La modification pour
+     vos propres besoins d'évaluation est autorisée ; sa diffusion ne
+     l'est pas ;
+  d) retirer, masquer ou altérer les mentions de propriété, de droits
+     d'auteur ou de licence ;
+  e) utiliser les noms, marques ou logos du Concédant pour promouvoir
+     un produit ou un service.
+
+
+3. Propriété
+
+Le Logiciel est concédé sous licence, non vendu. Le Concédant conserve
+l'intégralité des droits de propriété intellectuelle. Tout droit non
+expressément accordé par la présente licence est réservé.
+
+
+4. Retours
+
+Si vous transmettez au Concédant des remarques, rapports d'anomalie ou
+suggestions relatifs au Logiciel, vous lui accordez le droit irrévocable
+et gratuit de les utiliser, sans obligation de confidentialité ni de
+contrepartie. Vous n'êtes jamais tenu d'en transmettre.
+
+
+5. Données et confidentialité
+
+Le Logiciel fonctionne localement et n'effectue aucune transmission
+réseau. Les données qu'il produit restent sur votre machine, sous votre
+seul contrôle, et vous pouvez les supprimer à tout moment. La section
+« Ce qui est écrit sur votre machine » du fichier README.md en décrit la
+nature et l'emplacement.
+
+
+6. Composants tiers
+
+Le Logiciel peut s'appuyer sur des composants tiers, installés
+séparément et régis par leurs propres licences, notamment :
+
+  - node-notifier (licence MIT), dépendance optionnelle utilisée pour
+    l'affichage des notifications système ;
+  - SnoreToast (licence LGPL-3.0), distribué par node-notifier et
+    invoqué par le Logiciel en tant que programme distinct, sans liaison
+    de code.
+
+Ces composants ne sont pas redistribués par le Concédant. Rien dans la
+présente licence ne restreint les droits que leurs licences respectives
+vous accordent sur eux.
+
+
+7. Absence de garantie
+
+LE LOGICIEL EST FOURNI « EN L'ÉTAT », SANS GARANTIE D'AUCUNE SORTE,
+EXPRESSE OU IMPLICITE, Y COMPRIS LES GARANTIES DE QUALITÉ MARCHANDE,
+D'ADÉQUATION À UN USAGE PARTICULIER ET D'ABSENCE DE CONTREFAÇON.
+
+Le Logiciel est un dispositif d'alerte : il signale des situations qu'il
+estime dignes d'attention et peut se tromper dans les deux sens. Il ne
+remplace ni la relecture, ni la sauvegarde, ni le contrôle de version,
+et le Concédant ne garantit ni l'exhaustivité ni l'exactitude de ses
+signalements.
+
+
+8. Limitation de responsabilité
+
+DANS LA MESURE PERMISE PAR LE DROIT APPLICABLE, LE CONCÉDANT NE POURRA
+ÊTRE TENU RESPONSABLE D'AUCUN DOMMAGE DIRECT, INDIRECT, ACCESSOIRE,
+SPÉCIAL OU CONSÉCUTIF, NI D'AUCUNE PERTE DE DONNÉES, DE TRAVAIL, DE
+PROFIT OU D'EXPLOITATION, RÉSULTANT DE L'UTILISATION OU DE
+L'IMPOSSIBILITÉ D'UTILISER LE LOGICIEL.
+
+
+9. Durée et résiliation
+
+La licence prend effet à l'installation et demeure en vigueur jusqu'à sa
+résiliation. Elle prend fin automatiquement si vous en enfreignez une
+stipulation, et le Concédant peut y mettre fin à tout moment par simple
+notification.
+
+À la résiliation, cessez d'utiliser le Logiciel, désinstallez-le et
+supprimez les données qu'il a produites :
+
+    driftlight claude uninstall --global
+    driftlight notify uninstall
+    puis supprimez le dossier ~/.driftlight
+
+Les articles 3, 4, 7 et 8 survivent à la résiliation.
+
+
+10. Droit applicable
+
+La présente licence est régie par le droit [PAYS OU ÉTAT], à l'exclusion
+de ses règles de conflit de lois.
