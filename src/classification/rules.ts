@@ -30,6 +30,19 @@ function escaped(value: string): string {
 }
 
 /**
+ * Nom cité comme un mot, et non trouvé au milieu d'un autre.
+ *
+ * La recherche de sous-chaîne se lisait comme une mention : « faisons dix tests
+ * de notre outil » contient « test », donc le répertoire `test` passait pour
+ * désigné, et sa suppression pour demandée. Mesuré en usage réel — c'est ce
+ * qui a effacé un dossier de tests entier. Une phrase ordinaire ne doit pas
+ * pouvoir nommer un chemin par accident.
+ */
+function mentionsAsWord(haystack: string, needle: string): boolean {
+  return new RegExp(`(^|[^a-z0-9_.-])${escaped(needle)}([^a-z0-9_.-]|$)`, "i").test(haystack);
+}
+
+/**
  * Résolution locale prudente : chemin complet, nom de fichier, ou répertoire
  * explicitement cité seul. Un répertoire inclus dans un autre chemin de la
  * demande n'élargit pas implicitement tout le scope.
@@ -42,13 +55,12 @@ export function pathExplicitlyExpected(
   const intent = intentText(task, scopeAdditions);
   const normalizedPath = toPosixPath(filePath).toLowerCase();
   const basename = path.posix.basename(normalizedPath);
-  if (intent.includes(normalizedPath) || (basename.length >= 4 && intent.includes(basename))) return true;
+  if (mentionsAsWord(intent, normalizedPath)) return true;
+  if (basename.length >= 4 && mentionsAsWord(intent, basename)) return true;
 
   const withoutMentionedPaths = intent.replace(/[\w.@-]+(?:\/[\w.@-]+)+/g, " ");
   const directories = path.posix.dirname(normalizedPath).split("/").filter((part) => part.length >= 4);
-  return directories.some((directory) =>
-    new RegExp(`(^|[^a-z0-9_.-])${escaped(directory)}([^a-z0-9_.-]|$)`, "i").test(withoutMentionedPaths),
-  );
+  return directories.some((directory) => mentionsAsWord(withoutMentionedPaths, directory));
 }
 
 function finding(severity: Severity, code: string, reason: string): RuleFinding {
@@ -266,12 +278,31 @@ function deletionStaysOutsideRoot(
 }
 
 /**
+ * Verbe de destruction dans la demande de l'utilisateur.
+ *
+ * Nommer un chemin n'est pas demander sa disparition. « Corrige le test »,
+ * « regarde la doc », « relance le build » citent un répertoire sans rien
+ * réclamer de destructif — les traiter comme une autorisation revient à laisser
+ * n'importe quelle phrase désarmer la protection sur le dossier qu'elle
+ * mentionne. Pour effacer, il faut l'avoir demandé.
+ */
+function deletionRequestedInWords(task: string): boolean {
+  return /\b(?:supprim|efface|détrui|detrui|retire|enlèv|enlev|nettoi|purg|vide|delete|remove|clean|wipe|purge|drop|discard)/i
+    .test(task);
+}
+
+/**
  * Suppression que l'utilisateur vient de demander.
  *
  * Alerter sur ce qu'on vient de réclamer est la forme de bruit la plus sûre
- * pour faire désinstaller un outil. La racine du dépôt est exclue quoi qu'il
- * arrive : un point isolé se retrouve dans presque toutes les demandes, et
- * suffirait sinon à faire passer `rm -rf .` pour une instruction reçue.
+ * pour faire désinstaller un outil. Mais l'exemption exige deux choses, et non
+ * une seule : que le chemin soit désigné, et que la destruction soit demandée.
+ * Une portée ajoutée à la main par `driftlight add-scope` vaut à elle seule
+ * autorisation — l'utilisateur y a mis le chemin exprès.
+ *
+ * La racine du dépôt est exclue quoi qu'il arrive : un point isolé se retrouve
+ * dans presque toutes les demandes, et suffirait sinon à faire passer
+ * `rm -rf .` pour une instruction reçue.
  */
 function deletionExplicitlyRequested(
   segment: string,
@@ -282,13 +313,17 @@ function deletionExplicitlyRequested(
   if (!intent) return false;
   const targets = deletionTargets(segment, values);
   if (targets.length === 0) return false;
+  const asked = deletionRequestedInWords(intent.text);
   return targets.every((target) => {
     if (target === null) return false;
     const absolute = path.isAbsolute(target) ? path.resolve(target) : path.resolve(root, target);
     if (!isInsideRoot(root, absolute)) return true;
     const relative = toPosixPath(path.relative(root, absolute));
     if (relative === "" || relative === ".") return false;
-    return pathExplicitlyExpected(intent.text, intent.scopeAdditions, relative);
+    // Une portée ajoutée à la main est un geste délibéré ; le texte libre d'un
+    // tour ne l'est pas, et doit donc porter le verbe en plus du chemin.
+    if (pathExplicitlyExpected("", intent.scopeAdditions, relative)) return true;
+    return asked && pathExplicitlyExpected(intent.text, [], relative);
   });
 }
 

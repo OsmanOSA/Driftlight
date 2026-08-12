@@ -228,6 +228,22 @@ const DESTRUCTIVE_COMMANDS: Scenario[] = [
     rule: "destructive-file-command",
   },
   {
+    name: "un mot ordinaire de la demande pris pour une autorisation",
+    why: "mesuré en usage réel : « faisons dix tests de notre outil » a exempté rm -rf test et effacé le dossier de tests entier",
+    intent: "Okay, maintenant faisons dix tests de notre outil.",
+    steps: [{ bash: "rm -rf test" }],
+    expect: "RED",
+    rule: "destructive-file-command",
+  },
+  {
+    name: "un répertoire cité sans rien réclamer de destructif",
+    why: "nommer un chemin n'est pas demander sa disparition, sans quoi toute phrase désarme la protection sur le dossier qu'elle mentionne",
+    intent: "Corrige le test qui échoue dans le dossier test",
+    steps: [{ bash: "rm -rf test" }],
+    expect: "RED",
+    rule: "destructive-file-command",
+  },
+  {
     name: "un mktemp dirigé vers le dépôt par -p",
     why: "reconnaître mktemp sans regarder ses arguments transformerait l'exemption en passe-partout : avec -p, le dossier naît où on le désigne",
     intent: "Fais tourner la suite de tests",
@@ -866,6 +882,13 @@ const OUTSIDE_REPOSITORY: Scenario[] = [
     why: "les scripts s'appuient couramment sur TMPDIR, hors du dépôt par définition",
     intent: "Nettoie les fichiers intermédiaires",
     steps: [{ bash: 'WORK="/tmp/run-42"\nrm -rf "$WORK"' }],
+    expect: "SILENT",
+  },
+  {
+    name: "une suppression réellement demandée, verbe et chemin réunis",
+    why: "le resserrement ne doit pas rendre l'outil sourd à ce qu'on lui réclame : alerter sur ce qu'on vient de demander fait désinstaller un outil",
+    intent: "Supprime le dossier docs, on repart de zéro",
+    steps: [{ bash: "rm -rf docs" }],
     expect: "SILENT",
   },
   {
