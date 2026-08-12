@@ -23,6 +23,7 @@ import {
 } from "../src/notify/notified-log.js";
 import { appIconPath, severityIconPath } from "../src/notify/icons.js";
 import { identityStatus } from "../src/notify/identity.js";
+import { previewNotification } from "../src/notify/preview.js";
 import {
   buildToastXml,
   DEFAULT_TOAST_APP_ID,
@@ -141,6 +142,31 @@ test("no field of a notification is dropped on the detached hand-off", () => {
     // L'icône est la seule à être revérifiée sur disque au dernier moment.
     if (field === "icon") continue;
     assert.deepEqual(revived[field], built[field], `champ perdu à la remise : ${field}`);
+  }
+});
+
+/**
+ * `notify test` fabrique une alerte pour en montrer la forme : aucun hook n'a
+ * tourné, rien n'a été évalué. Lui faire annoncer « action refusée » pendant que
+ * l'agent continue de travailler apprendrait que cette phrase peut être fausse
+ * — la seule phrase qui doit rester digne de foi quand elle sort d'un vrai
+ * verdict.
+ */
+test("the preview announces itself instead of borrowing a verdict", () => {
+  for (const level of ["RED", "ORANGE"] as const) {
+    const preview = previewNotification(level);
+    const status = preview.detail?.status ?? "";
+
+    assert.doesNotMatch(preview.title, /bloqu|refus/i, `titre empruntant un verdict (${level})`);
+    assert.doesNotMatch(status, /bloqu|refus|confirmation demandée/i, `pied empruntant un verdict (${level})`);
+    assert.match(status, /Aperçu/);
+    assert.match(preview.message, /Aperçu/, "le texte plat sert macOS, il doit le dire aussi");
+    assert.notEqual(
+      preview.persistent,
+      true,
+      "une notification ne reste à l'écran que si elle attend une décision ; un aperçu n'en attend aucune",
+    );
+    assert.equal(preview.level, level, "l'aperçu doit emprunter la surface du niveau qu'il illustre");
   }
 });
 

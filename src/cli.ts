@@ -17,6 +17,7 @@ import { feedbackStatsPath, readFeedbackStats } from "./classification/feedback-
 import { loadNativeBackend, type NativeNotification } from "./notify/backend.js";
 import { severityIconPath } from "./notify/icons.js";
 import { identityStatus, installIdentity, removeIdentity } from "./notify/identity.js";
+import { previewNotification } from "./notify/preview.js";
 import { showWindowsPanel, WINDOWS_PANEL_STARTUP_MS } from "./notify/windows-panel.js";
 import { dismissWindowsToasts } from "./notify/windows-toast.js";
 import { loadScoringConfigSync } from "./config/scoring-config.js";
@@ -429,29 +430,7 @@ async function runNotify(args: string[]): Promise<void> {
     return;
   }
   if (action === "test") {
-    const level = args.includes("--orange") ? "ORANGE" : "RED";
-    const icon = severityIconPath(level);
-    const notification: NativeNotification = {
-      title: `DriftLight · ${path.basename(process.cwd())} — ${level === "RED" ? "action bloquée" : "à vérifier"}`,
-      message: "Réécriture d'un fichier contenant du travail non sauvegardé : src/exemple.ts\n"
-        + "Vous aviez demandé : « Corrige la faute de frappe dans src/app.ts »\n"
-        + "Refusez maintenant : ce contenu n'existe nulle part ailleurs.",
-      detail: {
-        verb: "Réécriture",
-        headline: "Fichier contenant du travail non sauvegardé",
-        evidence: "src/exemple.ts",
-        meta: level === "RED" ? "Alerte rouge · 2 signaux concordants" : "À vérifier",
-        intent: "« Corrige la faute de frappe dans src/app.ts »",
-        action: "Refusez maintenant : ce contenu n'existe nulle part ailleurs.",
-        status: level === "RED" ? "Action refusée — l'agent ne l'exécutera pas" : "Confirmation demandée dans l'agent",
-      },
-      level,
-      sound: true,
-      persistent: true,
-      attribution: "DriftLight — voyant local de dérive",
-      tag: "driftlight-notification-preview",
-      ...(icon ? { icon } : {}),
-    };
+    const notification = previewNotification(args.includes("--orange") ? "ORANGE" : "RED");
     // Le toast Windows passe avant le panneau en fonctionnement normal. `--panel`
     // court-circuite ce choix pour voir le panneau tel qu'il s'affichera lorsque
     // le toast échoue — sinon il ne serait observable que sur une panne.
