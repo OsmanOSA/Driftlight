@@ -210,8 +210,38 @@ test("a firm refusal and a confirmation request are never announced alike", asyn
     environment: NEUTRAL_ENV,
   });
 
-  assert.match(notifier.sent[0]?.title ?? "", /action bloquée$/);
+  assert.match(notifier.sent[0]?.title ?? "", /action refusée$/);
   assert.match(notifier.sent[1]?.title ?? "", /confirmation demandée$/);
+});
+
+/**
+ * Une notification ne décrit que ce que DriftLight a fait.
+ *
+ * Il sait ce qu'il a répondu au hook ; il ignore ce que son interlocuteur en
+ * fera, et n'a aucun moyen de le vérifier. Toute phrase au futur, ou qui
+ * affirme un résultat constatable, devient fausse dès que le hook est appelé
+ * par autre chose qu'un agent obéissant — et elle le devient sous les yeux de
+ * qui la lit, pendant que le travail continue à l'écran.
+ *
+ * Ce piège est revenu trois fois : dans le titre, puis dans l'aperçu, puis dans
+ * le pied du panneau. D'où ce garde-fou sur les trois surfaces à la fois.
+ */
+test("no notification predicts what anyone other than DriftLight will do", () => {
+  const forbidden = /ne l'exécutera pas|ne sera pas exécut|action bloquée|a été bloqué|s'est arrêté/i;
+  const root = "/repo";
+
+  for (const outcome of ["denied", "asked", "recorded"] as const) {
+    const alert = buildNotification(root, event("e1", "RED"), config(), outcome);
+    assert.doesNotMatch(alert.title, forbidden, `titre (${outcome})`);
+    assert.doesNotMatch(alert.message, forbidden, `corps (${outcome})`);
+    assert.doesNotMatch(alert.detail?.status ?? "", forbidden, `pied du panneau (${outcome})`);
+  }
+
+  // Le refus doit rester lisible comme un refus : le prudence ne doit pas
+  // l'avoir dilué en simple observation.
+  const refused = buildNotification(root, event("e1", "RED"), config(), "denied");
+  assert.match(refused.detail?.status ?? "", /refusée/i);
+  assert.match(refused.title, /refusée/i);
 });
 
 /**
@@ -602,7 +632,7 @@ test("the Windows panel lays out the structured detail rather than stacked lines
       meta: "Alerte rouge · 2 signaux concordants",
       intent: "« Corrige & range »",
       action: "Refusez maintenant.",
-      status: "Action refusée — l'agent ne l'exécutera pas",
+      status: "Action refusée — l'agent n'est pas autorisé à l'exécuter",
     },
     readyFile,
   });
@@ -612,7 +642,7 @@ test("the Windows panel lays out the structured detail rather than stacked lines
   assert.equal(payload.headline, "Fichier contenant du travail non sauvegardé", "l'énoncé ouvre le panneau, donc il porte la majuscule");
   assert.equal(payload.evidence, "src/legacy.ts", "le sujet vit dans son propre encart, pas collé à l'énoncé");
   assert.equal(payload.meta, "Alerte rouge · 2 signaux concordants");
-  assert.equal(payload.status, "Action refusée — l'agent ne l'exécutera pas");
+  assert.equal(payload.status, "Action refusée — l'agent n'est pas autorisé à l'exécuter");
   assert.equal(payload.persistent, true);
   assert.equal(payload.readyFile, readyFile);
   assert.match(payload.accentStart, /^#FF/);
@@ -636,13 +666,13 @@ test("a notification without structured detail still fills the panel", () => {
   assert.equal(payload.intent, "Vous aviez demandé : « Corrige & range »");
   assert.equal(payload.action, "Refusez maintenant.");
   assert.equal(payload.verb, "", "sans verbe connu, la rangée se replie plutôt que d'en inventer un");
-  assert.equal(payload.status, "Action bloquée");
+  assert.equal(payload.status, "Action refusée");
 });
 
 test("the Windows panel keeps user text out of executable PowerShell", () => {
   const notification = {
     ...richNotification,
-    title: "DriftLight · projet — action bloquée'; exit 9; #",
+    title: "DriftLight · projet — action refusée'; exit 9; #",
   };
   const script = windowsPanelScript(notification);
 
@@ -699,7 +729,7 @@ test("a severity badge is attached only when the file really exists", () => {
 // --- Toast Windows enrichi ----------------------------------------------------
 
 const richNotification: NativeNotification = {
-  title: "DriftLight · projet — action bloquée",
+  title: "DriftLight · projet — action refusée",
   message: "Réécriture d'un fichier : src/legacy.ts\nVous aviez demandé : « Corrige & range »\nRefusez maintenant.",
   sound: true,
   persistent: true,
@@ -727,7 +757,7 @@ test("the Windows toast improves hierarchy without rewriting its content", () =>
   const xml = buildToastXml(richNotification, "file:///badge-red.png");
 
   assert.match(xml, /<visual lang="fr-FR">/);
-  assert.match(xml, /hint-style="title"[^>]*>DriftLight · projet — action bloquée<\/text>/);
+  assert.match(xml, /hint-style="title"[^>]*>DriftLight · projet — action refusée<\/text>/);
   assert.match(xml, /hint-style="body"[^>]*>Réécriture d&apos;un fichier : src\/legacy\.ts<\/text>/);
   assert.match(xml, /hint-style="captionSubtle"[^>]*>Vous aviez demandé/);
   assert.match(xml, /hint-style="bodySubtle"[^>]*>Refusez maintenant/);

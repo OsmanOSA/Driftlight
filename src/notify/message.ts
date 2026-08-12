@@ -118,17 +118,24 @@ export interface NotificationCopy {
 /**
  * Le titre décrit ce que DriftLight a fait, et rien de plus.
  *
- * « Action bloquée » est réservé au refus ferme (`deny`). Une demande de
- * confirmation peut être contournée par un mode de permission permissif, et une
- * alerte simplement enregistrée n'interrompt rien : leur attribuer le même
- * verdict transformerait le voyant en fausse sécurité.
+ * Le refus ferme (`deny`) se distingue de la demande de confirmation, qu'un
+ * mode de permission permissif écarte sans rien dire, et de l'alerte simplement
+ * enregistrée, qui n'interrompt rien : leur attribuer le même verdict
+ * transformerait le voyant en fausse sécurité.
+ *
+ * Mais le refus lui-même ne se raconte qu'au passé et à la première personne.
+ * DriftLight sait ce qu'il a répondu ; il ne sait pas ce que son interlocuteur
+ * en fera, et n'a aucun moyen de le vérifier. « Action bloquée » affirmait un
+ * résultat constatable — or il suffit que le hook soit appelé par autre chose
+ * qu'un agent obéissant pour que la phrase devienne fausse sous les yeux de qui
+ * la lit. « Action refusée » n'affirme que le geste de DriftLight, qui est vrai
+ * dans tous les cas.
  */
 export type HookOutcome = "denied" | "asked" | "recorded";
 
 export function notificationTitle(root: string, event: SessionEvent, outcome: HookOutcome): string {
   const verdict = outcome === "denied"
-    // Seul cas où une promesse d'arrêt est tenable : `deny` ne se contourne pas.
-    ? "action bloquée"
+    ? "action refusée"
     : outcome === "asked"
       ? "confirmation demandée"
       : event.level === "RED" ? "alerte rouge" : "à vérifier";
@@ -222,13 +229,18 @@ export function evidenceMeta(event: SessionEvent): string {
 }
 
 /**
- * Ce que le hook a obtenu, et où la décision se prend.
+ * Ce que le hook a répondu, et où la décision se prend.
  *
- * Même prudence que `notificationTitle` : seul `deny` autorise à parler d'arrêt.
- * Nommer l'endroit où trancher évite d'avoir à chercher quelle fenêtre attend.
+ * Même prudence que `notificationTitle`, poussée d'un cran : la phrase ne doit
+ * décrire ni un résultat ni un comportement futur, mais la réponse rendue.
+ * « L'agent ne l'exécutera pas » prédisait la conduite d'un tiers ; il a suffi
+ * d'un appel du hook hors d'une vraie session d'agent pour que la notification
+ * annonce un arrêt pendant que le travail se poursuivait à l'écran.
+ * « N'est pas autorisé à l'exécuter » énonce la permission refusée — aussi
+ * ferme, et vrai que l'interlocuteur obéisse ou non.
  */
 const OUTCOME_STATUS: Record<HookOutcome, string> = {
-  denied: "Action refusée — l'agent ne l'exécutera pas",
+  denied: "Action refusée — l'agent n'est pas autorisé à l'exécuter",
   asked: "Confirmation demandée dans l'agent",
   recorded: "Alerte enregistrée — rien n'a été retenu",
 };
