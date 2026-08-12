@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -25,6 +25,22 @@ export const WINDOWS_PANEL_CONFIRM_MS = 5_000;
  * il n'a plus de raison d'occuper l'écran.
  */
 export const PANEL_CONFIRMATION_MS = 6_000;
+
+/**
+ * Temps laissé à l'utilisateur pour trancher, hook suspendu.
+ *
+ * Le hook attend cette réponse au lieu de décider seul : l'agent est mis en
+ * pause, pas tué, et il repart de lui-même dès que la décision tombe. Le prix
+ * est que l'agent reste figé tant que personne ne répond — d'où une attente
+ * bornée, et un refus à l'échéance.
+ *
+ * Elle doit rester très en deçà du délai du hook lui-même : Claude Code laisse
+ * passer l'appel d'un hook expiré, si bien qu'un dépassement ne refuserait pas,
+ * il ouvrirait. Répondre à temps est la seule façon de tenir la porte.
+ */
+export const PANEL_DECISION_MS = 90_000;
+
+export type PanelDecision = "allow" | "deny";
 const WINDOWS_PANEL_BROKER_MS = 3_000;
 export const WINDOWS_PANEL_WIDTH = 412;
 /**
@@ -117,6 +133,11 @@ export interface WindowsPanelPayload {
     confirmation: string;
     failure: string;
   };
+  /**
+   * Fichier où le panneau écrit la réponse de l'utilisateur. Présent lorsque le
+   * hook attend cette réponse pour trancher, au lieu d'avoir déjà tranché.
+   */
+  decisionFile?: string;
   context: string;
   verb: string;
   headline: string;
@@ -138,12 +159,21 @@ export function panelEventName(eventId: string): string {
   return `Local\\DriftLight.Notification.${safe || "alert"}`;
 }
 
-export function safePanelReadyFile(value: string | undefined): string | undefined {
+/** Borne commune aux fichiers d'échange du panneau : jamais hors du dossier temporaire. */
+function safeTemporaryFile(value: string | undefined, prefix: string): string | undefined {
   if (!value) return undefined;
   const candidate = path.resolve(value);
   const relative = path.relative(path.resolve(os.tmpdir()), candidate);
   if (relative.startsWith("..") || path.isAbsolute(relative)) return undefined;
-  return path.basename(candidate).startsWith("driftlight-panel-ready-") ? candidate : undefined;
+  return path.basename(candidate).startsWith(prefix) ? candidate : undefined;
+}
+
+export function safePanelReadyFile(value: string | undefined): string | undefined {
+  return safeTemporaryFile(value, "driftlight-panel-ready-");
+}
+
+export function safePanelDecisionFile(value: string | undefined): string | undefined {
+  return safeTemporaryFile(value, "driftlight-panel-decision-");
 }
 
 function capitalise(value: string): string {
@@ -183,6 +213,7 @@ export function windowsPanelPayload(notification: NativeNotification): WindowsPa
     : /(?:red|rouge)/i.test(path.basename(notification.icon ?? ""))
       || /(?:bloquée|rouge|refusée)/i.test(verdict);
   const readyFile = safePanelReadyFile(notification.readyFile);
+  const decisionFile = safePanelDecisionFile(notification.decisionFile);
   const content = notification.detail
     ? { ...notification.detail, headline: capitalise(notification.detail.headline) }
     : payloadFromText(notification, verdict);
@@ -201,6 +232,7 @@ export function windowsPanelPayload(notification: NativeNotification): WindowsPa
     accentStart: red ? "#FFFFA079" : "#FFFFC66B",
     accentEnd: red ? "#FFCA5C78" : "#FFD58B4E",
     ...(notification.authorize ? { authorize: notification.authorize } : {}),
+    ...(decisionFile ? { decisionFile } : {}),
     ...(notification.tag ? { eventName: panelEventName(notification.tag) } : {}),
     ...(readyFile ? { readyFile } : {}),
   };
@@ -250,14 +282,20 @@ export function windowsPanelScript(notification: NativeNotification): string {
     // il n'y a rien à trancher.
     "$decision=$window.FindName('PanelDecision')",
     "$authorize=$window.FindName('PanelAuthorize')",
+    // Quand le hook attend, chaque bouton lui répond puis referme : l'agent
+    // reprend de lui-même, sans que l'utilisateur ait à le relancer.
+    "$answer={param($verdict) if($payload.decisionFile){try{[IO.File]::WriteAllText($payload.decisionFile,$verdict)}catch{}};$window.Close()}",
     "if(-not $payload.authorize){$decision.Visibility=[Windows.Visibility]::Collapsed}else{",
     "  $window.FindName('PanelAuthorizeLabel').Text=$payload.authorize.label",
     "  $window.FindName('PanelHint').Visibility=[Windows.Visibility]::Collapsed",
-    "  $window.FindName('PanelKeep').Add_Click({$window.Close()}.GetNewClosure())",
+    "  $window.FindName('PanelKeep').Add_Click({&$answer 'deny'}.GetNewClosure())",
     // Les arguments partent en tableau, jamais en ligne de commande : aucun
     // chemin ni texte d'alerte ne traverse d'interpréteur.
     "  $authorize.Add_Click({",
     "    $authorize.IsEnabled=$false",
+    // Le hook suspendu attend une réponse, pas une portée : l'y inscrire en
+    // plus rendrait permanent un accord donné pour une seule action.
+    "    if($payload.decisionFile){ &$answer 'allow'; return }",
     "    $ok=$false",
     "    try{ $p=Start-Process -FilePath $payload.authorize.exe -ArgumentList $payload.authorize.args -WindowStyle Hidden -PassThru -Wait; $ok=($p.ExitCode -eq 0) }catch{ $ok=$false }",
     "    $status=$window.FindName('PanelStatusText')",
@@ -293,7 +331,10 @@ export function windowsPanelScript(notification: NativeNotification): string {
     "$app=New-Object Windows.Application",
     "$app.ShutdownMode=[Windows.ShutdownMode]::OnExplicitShutdown",
     "$window.Add_ContentRendered({&$place;if([Windows.SystemParameters]::ClientAreaAnimation){$move.BeginAnimation([Windows.Media.TranslateTransform]::YProperty,$slide);$window.BeginAnimation([Windows.Window]::OpacityProperty,$fade)}else{$move.Y=0;$window.Opacity=1};if($payload.sound){[System.Media.SystemSounds]::Exclamation.Play()};if($payload.readyFile){[IO.File]::WriteAllText($payload.readyFile,'ready')}}.GetNewClosure())",
-    "$window.Add_Closed({$timer.Stop();if($signal){$signal.Dispose()};$app.Shutdown()}.GetNewClosure())",
+    // Fermer sans répondre est une réponse : le hook attend, et le laisser
+    // expirer serait pire qu'un refus — Claude Code laisse passer l'appel d'un
+    // hook expiré.
+    "$window.Add_Closed({$timer.Stop();if($payload.decisionFile -and -not (Test-Path $payload.decisionFile)){try{[IO.File]::WriteAllText($payload.decisionFile,'deny')}catch{}};if($signal){$signal.Dispose()};$app.Shutdown()}.GetNewClosure())",
     // Donner explicitement la fenêtre à Application.Run est le point de durée
     // de vie : sans propriétaire, PowerShell peut rendre la main et détruire le
     // panneau juste après son premier rendu, même s'il est persistant.
@@ -352,6 +393,49 @@ async function launchPanel(script: string): Promise<boolean> {
   // Le processus lancé par Explorer lit puis supprime lui-même ce fichier. Le
   // supprimer ici créerait une course entre le broker et son nouveau processus.
   return true;
+}
+
+/**
+ * Suspend le hook jusqu'à ce que l'utilisateur tranche.
+ *
+ * C'est le modèle de la fenêtre de permission de l'agent hôte, et la seule
+ * façon d'obtenir ce qu'un refus sec ne donne pas : l'action est retenue, la
+ * main revient à l'utilisateur, et l'agent **repart tout seul** dès qu'il a
+ * répondu — sans avoir à être relancé.
+ *
+ * Rend toujours une décision, jamais rien. Panneau qui ne démarre pas, échéance
+ * atteinte, fenêtre fermée sans réponse : tout retombe sur le refus. Laisser
+ * expirer le hook serait pire que refuser, puisque Claude Code laisse alors
+ * passer l'appel.
+ */
+export async function awaitPanelDecision(
+  notification: NativeNotification,
+  budgetMs = PANEL_DECISION_MS,
+): Promise<PanelDecision> {
+  const decisionFile = path.join(os.tmpdir(), `driftlight-panel-decision-${process.pid}-${randomUUID()}`);
+  try {
+    const shown = await showWindowsPanel({ ...notification, decisionFile }, WINDOWS_PANEL_CONFIRM_MS);
+    if (!shown) return "deny";
+    const deadline = Date.now() + budgetMs;
+    while (Date.now() < deadline) {
+      try {
+        const answer = readFileSync(decisionFile, "utf8").trim();
+        if (answer === "allow" || answer === "deny") return answer;
+      } catch {
+        // Pas encore répondu : le fichier n'existe pas tant que rien n'est décidé.
+      }
+      await delay(120);
+    }
+    return "deny";
+  } catch {
+    return "deny";
+  } finally {
+    try {
+      unlinkSync(decisionFile);
+    } catch {
+      // Jamais écrit, ou déjà retiré : rien à nettoyer.
+    }
+  }
 }
 
 /**

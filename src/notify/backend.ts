@@ -90,6 +90,11 @@ export interface NativeNotification {
   authorize?: NotificationAuthorization;
   /** Accusé de démarrage interne du panneau de prévisualisation Windows. */
   readyFile?: string;
+  /**
+   * Fichier où le panneau dépose la réponse de l'utilisateur, lorsque le hook
+   * l'attend au lieu d'avoir déjà tranché.
+   */
+  decisionFile?: string;
 }
 
 export interface NotifierBackend {

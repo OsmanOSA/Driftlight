@@ -13,6 +13,7 @@ import { severityIconPath } from "./icons.js";
 import { notificationDetail, notificationMessage, notificationTitle, type HookOutcome } from "./message.js";
 import { NotificationLedger, type ReservationOutcome } from "./notified-log.js";
 import { rememberPendingToasts, takePendingToasts } from "./pending-toasts.js";
+import { awaitPanelDecision, type PanelDecision } from "./windows-panel.js";
 
 export type NotificationOutcome =
   | "sent"
@@ -112,12 +113,52 @@ export function buildNotification(
     message: notificationMessage(root, event, intent),
     detail: notificationDetail(root, event, intent, resolved),
     level: event.level,
-    ...(resolved === "denied" && config.haltOnRefusal
+    ...(resolved === "denied"
       ? { halted: true, authorize: buildAuthorization(root, event) }
       : {}),
     sound: config.notificationSound,
     ...(icon ? { icon } : {}),
   };
+}
+
+/**
+ * L'utilisateur peut-il être consulté sur place ?
+ *
+ * Le panneau est propre à Windows, et une suite de tests ne doit jamais faire
+ * surgir de fenêtre bloquante sur la machine qui l'exécute. Partout ailleurs,
+ * l'appelant retombe sur un refus sec.
+ */
+export function interactiveDecisionAvailable(environment: NodeJS.ProcessEnv = process.env): boolean {
+  return process.platform === "win32" && !notificationsDisabledByEnvironment(environment);
+}
+
+/**
+ * Suspend l'appelant jusqu'à ce que l'utilisateur tranche, puis rend sa réponse.
+ *
+ * C'est le modèle de la fenêtre de permission de l'agent hôte : l'action est
+ * retenue, la main revient à l'utilisateur, et l'agent repart de lui-même dès
+ * qu'il a répondu. Un refus sec obtenait la retenue mais pas la reprise — il
+ * fallait relancer l'agent à la main, ce que personne ne devrait avoir à faire.
+ *
+ * Ne rejette jamais et ne rend jamais rien : toute défaillance vaut refus.
+ */
+export async function askUserDecision(
+  root: string,
+  event: SessionEvent,
+  config: DriftLightConfig,
+  sessionId: string,
+): Promise<PanelDecision> {
+  try {
+    let intent: CurrentIntentState | null = null;
+    try {
+      intent = readOwnCurrentIntentSync(root, sessionId);
+    } catch {
+      intent = null;
+    }
+    return await awaitPanelDecision(buildNotification(root, event, config, "denied", intent));
+  } catch {
+    return "deny";
+  }
 }
 
 /**

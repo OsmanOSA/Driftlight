@@ -13,7 +13,12 @@ import {
 } from "../intent/agent-context.js";
 import { diffSnapshots, scanRepository } from "../observer/snapshot.js";
 import { updateImportGraph } from "../profile/import-graph.js";
-import { dismissPendingNotifications, dispatchNotifications } from "../notify/dispatcher.js";
+import {
+  askUserDecision,
+  dismissPendingNotifications,
+  dispatchNotifications,
+  interactiveDecisionAvailable,
+} from "../notify/dispatcher.js";
 import { suppressedByCap } from "../notify/notified-log.js";
 import { safeIdentifier } from "../shared/paths.js";
 import { redactSensitiveText } from "../shared/redact.js";
@@ -328,22 +333,36 @@ export async function handleClaudeHook(input: ClaudeHookInput): Promise<ClaudeHo
       || (config.enforceRed === "irreversible" && destroysUnrecoverableWork(blockingEvent, session))
     );
 
+    // Quand l'utilisateur peut être consulté, le panneau *est* la notification :
+    // la dispatcher en plus en afficherait deux pour la même alerte.
+    const asking = denied && blockingEvent !== undefined && interactiveDecisionAvailable();
     await signalEvents(
       session,
-      acceptedEvents,
-      blockingEvent ? [blockingEvent.id] : [],
-      denied && blockingEvent ? [blockingEvent.id] : [],
+      asking ? acceptedEvents.filter((event) => event.id !== blockingEvent.id) : acceptedEvents,
+      blockingEvent && !asking ? [blockingEvent.id] : [],
+      denied && blockingEvent && !asking ? [blockingEvent.id] : [],
     );
+
+    // Le hook se suspend ici, comme le fait la fenêtre de permission de l'agent
+    // hôte. C'est ce qui distingue une retenue d'un arrêt : l'action attend une
+    // réponse, et l'agent repart de lui-même dès qu'elle tombe — sans que
+    // personne ait à le relancer.
+    const answer = asking && blockingEvent
+      ? await askUserDecision(session.cwd, blockingEvent, config, session.id)
+      : undefined;
+
     const title = titleOutput(session.cwd);
+    if (answer === "allow") return title;
 
     if (!blockingEvent) return title;
     const subject = blockingEvent.path ?? blockingEvent.detail ?? "action";
     const reason = blockingEvent.reasons[0] ?? blockingEvent.ruleId;
     const message = `DriftLight ${blockingEvent.level} — ${subject} — ${blockingEvent.ruleId}: ${reason} [${blockingEvent.id}]`;
-    // Refuser l'appel sans arrêter l'agent ne protège qu'à moitié : il enchaîne
-    // sur autre chose, et l'utilisateur voit défiler des refus pendant que le
-    // travail continue. Quand la perte serait définitive, la main lui revient.
-    const halt = denied && config.haltOnRefusal;
+    // L'arrêt du tour n'est plus qu'un dernier recours : il n'existe que là où
+    // l'utilisateur n'a pas pu être consulté — hors de Windows, ou notifications
+    // coupées. Refuser sans pouvoir demander laisserait sinon l'agent enchaîner
+    // sur autre chose pendant que l'utilisateur regarde passer des refus.
+    const halt = denied && config.haltOnRefusal && answer === undefined;
     return {
       ...title,
       suppressOutput: true,

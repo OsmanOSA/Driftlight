@@ -26,10 +26,22 @@ type Settings = Record<string, unknown> & { hooks?: Record<string, unknown> };
  */
 export const READ_TOOL_MATCHER = CLAUDE_READ_TOOLS.join("|");
 
+/**
+ * Délai du seul hook qui puisse suspendre l'agent le temps d'une décision
+ * humaine. Il doit couvrir cette attente avec de la marge : Claude Code laisse
+ * passer l'appel d'un hook expiré, si bien qu'un dépassement n'aurait pas
+ * l'effet d'un refus mais celui d'une autorisation.
+ */
+export const PRE_TOOL_USE_TIMEOUT_S = 180;
+
 const HOOK_DEFINITIONS: Array<{ event: string; matcher?: string; timeout?: number }> = [
   { event: "SessionStart", matcher: "startup|resume|clear" },
   { event: "UserPromptSubmit" },
-  { event: "PreToolUse", matcher: "Bash|PowerShell|Edit|Write|NotebookEdit" },
+  // Seul hook qui peut suspendre l'agent le temps d'une décision humaine. Son
+  // délai doit couvrir cette attente avec de la marge : Claude Code laisse
+  // passer l'appel d'un hook expiré, si bien qu'un dépassement n'aurait pas
+  // l'effet d'un refus mais celui d'une autorisation.
+  { event: "PreToolUse", matcher: "Bash|PowerShell|Edit|Write|NotebookEdit", timeout: PRE_TOOL_USE_TIMEOUT_S },
   { event: "PostToolUse", matcher: "Bash|PowerShell|Edit|Write|NotebookEdit" },
   { event: "PostToolUse", matcher: READ_TOOL_MATCHER },
   { event: "FileChanged", matcher: ".env|package.json|package-lock.json|pnpm-lock.yaml|yarn.lock" },

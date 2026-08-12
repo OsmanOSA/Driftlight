@@ -22,6 +22,7 @@ import {
   suppressedByCap,
 } from "../src/notify/notified-log.js";
 import { appIconPath, severityIconPath } from "../src/notify/icons.js";
+import { PRE_TOOL_USE_TIMEOUT_S } from "../src/claude/installer.js";
 import { identityStatus } from "../src/notify/identity.js";
 import { previewNotification } from "../src/notify/preview.js";
 import {
@@ -38,6 +39,7 @@ import {
 import {
   panelEventName,
   PANEL_CONFIRMATION_MS,
+  PANEL_DECISION_MS,
   WINDOWS_PANEL_CONFIRM_MS,
   WINDOWS_PANEL_MAX_HEIGHT,
   WINDOWS_PANEL_STARTUP_MS,
@@ -132,10 +134,9 @@ test("only an alert that stopped the agent claims the screen", () => {
     );
   }
 
-  // Refus sans arrêt : la décision n'attend nulle part, le panneau non plus.
-  const withoutHalt = buildNotification("/repo", event("e1", "RED"), config({ haltOnRefusal: false }), "denied");
-  assert.equal(withoutHalt.halted, undefined);
-  assert.equal(withoutHalt.authorize, undefined, "sans arrêt, aucun geste n'est en attente");
+  // Le geste accompagne le refus, qu'il soit rendu par le hook ou attendu de
+  // l'utilisateur : dans les deux cas quelque chose est en suspens.
+  assert.ok(halting.authorize, "un refus laisse toujours une décision à prendre");
 
   // Le repli n'a lieu qu'après cette attente : au-delà, une alerte qui a coupé
   // le tour resterait invisible pendant ce temps-là, panneau mort-né.
@@ -187,6 +188,30 @@ test("the preview announces itself instead of borrowing a verdict", () => {
     );
     assert.equal(preview.level, level, "l'aperçu doit emprunter la surface du niveau qu'il illustre");
   }
+});
+
+/**
+ * Le hook suspendu ne doit jamais laisser passer par accident.
+ *
+ * Claude Code laisse passer l'appel d'un hook expiré : un dépassement n'aurait
+ * donc pas l'effet d'un refus mais celui d'une autorisation. Tout ce qui n'est
+ * pas une réponse explicite de l'utilisateur doit retomber sur le refus, et
+ * l'attente doit rester très en deçà du délai accordé au hook.
+ */
+test("waiting for a human never becomes a way through", () => {
+  assert.ok(PANEL_DECISION_MS <= 120_000, "un agent figé plus longtemps n'est plus utilisable");
+  const hookBudgetMs = PRE_TOOL_USE_TIMEOUT_S * 1000;
+  assert.ok(
+    PANEL_DECISION_MS * 1.5 < hookBudgetMs,
+    "l'attente doit rendre sa réponse bien avant que le hook n'expire, sinon l'appel passe",
+  );
+
+  // Le panneau n'écrit que ces deux mots ; toute autre valeur, ou aucune, vaut
+  // refus côté attente.
+  const script = windowsPanelScript(buildNotification("/repo", event("e1", "RED"), config(), "denied"));
+  assert.match(script, /\$answer 'deny'/, "fermer sans répondre est une réponse");
+  assert.match(script, /\$answer 'allow'/);
+  assert.match(script, /decisionFile.*deny/, "la fermeture de la fenêtre doit écrire un refus");
 });
 
 /**
